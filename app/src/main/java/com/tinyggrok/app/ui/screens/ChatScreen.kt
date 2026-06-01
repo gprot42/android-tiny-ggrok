@@ -2,7 +2,6 @@ package com.tinyggrok.app.ui.screens
 
 import android.content.Intent
 import android.net.Uri
-import android.view.MotionEvent
 import android.webkit.WebView
 import android.webkit.WebResourceRequest
 import android.webkit.WebViewClient
@@ -73,11 +72,13 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.rememberNestedScrollInteropConnection
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -614,11 +615,17 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
     """.trimIndent()
 
     AndroidView(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            // Bridge the WebView's Android nested-scroll dispatches to the Compose
+            // LazyColumn so vertical drags that start on the answer scroll the chat
+            // list instead of getting swallowed by the WebView.
+            .nestedScroll(rememberNestedScrollInteropConnection()),
         factory = { context ->
-            ChatContentWebView(context).apply {
+            WebView(context).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 settings.javaScriptEnabled = false
+                isNestedScrollingEnabled = true
                 // Open <a> links in the user's external browser instead of the WebView.
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
@@ -654,37 +661,6 @@ private fun openExternally(context: android.content.Context, uri: Uri): Boolean 
     } catch (_: Exception) {
         Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
         true
-    }
-}
-
-/**
- * WebView that lets the surrounding LazyColumn handle vertical scrolling. The view
- * wraps its full content height, so it never needs to scroll internally; on every
- * touch we clear the "disallow intercept" flag the WebView normally sets, which
- * otherwise blocks the parent list from scrolling when a drag starts on the answer.
- * Horizontal drags (e.g. wide tables) are still left to the WebView.
- */
-private class ChatContentWebView(context: android.content.Context) : WebView(context) {
-    private var downX = 0f
-    private var downY = 0f
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                downX = event.x
-                downY = event.y
-                parent?.requestDisallowInterceptTouchEvent(true)
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val dx = kotlin.math.abs(event.x - downX)
-                val dy = kotlin.math.abs(event.y - downY)
-                // Vertical drag -> let the parent list scroll. Horizontal -> keep it.
-                if (dy > dx) {
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                }
-            }
-        }
-        return super.onTouchEvent(event)
     }
 }
 
