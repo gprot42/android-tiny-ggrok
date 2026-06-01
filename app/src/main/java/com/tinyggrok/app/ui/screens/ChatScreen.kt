@@ -14,6 +14,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
@@ -192,10 +193,20 @@ fun ChatScreen(
                             val pan = event.calculatePan()
                             val pointers = event.changes.count { it.pressed }
                             if (pointers >= 2) {
-                                // Pinch: update scale and pan together
-                                val newScale = (screenScale * zoom).coerceIn(1f, 4f)
+                                // Pinch: zoom around the centroid (the point between the
+                                // user's fingers) so the area they're focused on stays put,
+                                // instead of always scaling from the top-left corner.
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                val oldScale = screenScale
+                                val newScale = (oldScale * zoom).coerceIn(1f, 4f)
+                                val scaleFactor = newScale / oldScale
+                                // Keep the content point under the centroid fixed, then apply pan.
+                                val focusedOffset = Offset(
+                                    x = centroid.x - scaleFactor * (centroid.x - screenOffset.x),
+                                    y = centroid.y - scaleFactor * (centroid.y - screenOffset.y)
+                                )
                                 screenScale = newScale
-                                screenOffset = clampOffset(screenOffset + pan, newScale)
+                                screenOffset = clampOffset(focusedOffset + pan, newScale)
                                 event.changes.forEach { it.consume() }
                             } else if (pointers == 1 && screenScale > 1f) {
                                 // Single-finger pan while zoomed in
