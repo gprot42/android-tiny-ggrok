@@ -5,9 +5,14 @@ A lightweight native Android app for chatting with xAI's Grok 4.3 model.
 ## Features
 - Secure API key entry and storage in Settings
 - Three themes: Light, Dark, Tokyo Night
-- Uses Grok 4.3 via xAI API (`https://api.x.ai/v1/chat/completions`)
+- Uses Grok 4.3 via xAI Agent Tools / Responses API (`https://api.x.ai/v1/responses`)
+- **Live web search**: when Grok is unsure or a question depends on recent/factual
+  information, it automatically uses the `web_search` tool to look it up instead of
+  guessing. Source links are appended to the answer and are clickable (open in your
+  browser).
 - Clean Jetpack Compose UI with MVVM architecture
 - Chat with message history (in-memory for now)
+- Pinch-to-zoom on the whole chat screen (zooms around your fingers)
 - Streaming support planned
 
 ## Requirements
