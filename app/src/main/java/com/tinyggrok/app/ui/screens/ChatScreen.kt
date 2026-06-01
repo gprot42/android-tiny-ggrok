@@ -71,6 +71,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -103,6 +104,19 @@ fun ChatScreen(
     // Whole-screen pinch-to-zoom state (applies to the entire chat content, not just LLM output)
     var screenScale by remember { mutableStateOf(1f) }
     var screenOffset by remember { mutableStateOf(Offset.Zero) }
+    var contentSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+
+    // Clamp the pan offset so the scaled content can be moved fully into view
+    // (top-left transform origin means valid translation is negative, 0..-(scale-1)*size).
+    fun clampOffset(offset: Offset, scale: Float): Offset {
+        if (scale <= 1f) return Offset.Zero
+        val maxX = (scale - 1f) * contentSize.width
+        val maxY = (scale - 1f) * contentSize.height
+        return Offset(
+            x = offset.x.coerceIn(-maxX, 0f),
+            y = offset.y.coerceIn(-maxY, 0f)
+        )
+    }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -164,20 +178,31 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .navigationBarsPadding()
-                // Two-finger pinch zooms/pans the entire screen content. Single-finger
-                // gestures are left untouched so list scrolling & text selection still work.
+                .onSizeChanged { contentSize = it }
+                // Two-finger pinch zooms the whole screen. Once zoomed in, a single
+                // finger pans the content in any direction (left/right/up/down) so the
+                // user can reach everything; at 1x, single-finger gestures pass through
+                // to the list for normal scrolling & text selection.
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
                         do {
                             val event = awaitPointerEvent()
-                            if (event.changes.size >= 2) {
-                                val zoom = event.calculateZoom()
-                                val pan = event.calculatePan()
+                            val zoom = event.calculateZoom()
+                            val pan = event.calculatePan()
+                            val pointers = event.changes.count { it.pressed }
+                            if (pointers >= 2) {
+                                // Pinch: update scale and pan together
                                 val newScale = (screenScale * zoom).coerceIn(1f, 4f)
                                 screenScale = newScale
-                                screenOffset = if (newScale > 1f) screenOffset + pan else Offset.Zero
+                                screenOffset = clampOffset(screenOffset + pan, newScale)
                                 event.changes.forEach { it.consume() }
+                            } else if (pointers == 1 && screenScale > 1f) {
+                                // Single-finger pan while zoomed in
+                                if (pan != Offset.Zero) {
+                                    screenOffset = clampOffset(screenOffset + pan, screenScale)
+                                    event.changes.forEach { it.consume() }
+                                }
                             }
                         } while (event.changes.any { it.pressed })
                     }
