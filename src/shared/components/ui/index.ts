@@ -1,6 +1,0 @@
-export { Button, buttonVariants, type ButtonProps } from "./button"
-export { Textarea } from "./textarea"
-export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent } from "./card"
-export { Tabs, TabsList, TabsTrigger, TabsContent } from "./tabs"
-export { Badge, badgeVariants, type BadgeProps } from "./badge"
-export { ScrollArea, ScrollBar } from "./scroll-area"
