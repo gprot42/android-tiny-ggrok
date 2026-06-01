@@ -1,7 +1,11 @@
 package com.tinyggrok.app.ui.screens
 
 import android.content.Intent
+import android.net.Uri
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -151,6 +155,12 @@ private fun HistoryEntryCard(entry: ResponseHistoryEntry, index: Int) {
                     WebView(ctx).apply {
                         setBackgroundColor(android.graphics.Color.TRANSPARENT)
                         settings.javaScriptEnabled = false
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView,
+                                request: WebResourceRequest
+                            ): Boolean = openLinkExternally(ctx, request.url)
+                        }
                         settings.useWideViewPort = false
                         settings.loadWithOverviewMode = false
                         settings.setSupportZoom(false)
@@ -164,6 +174,19 @@ private fun HistoryEntryCard(entry: ResponseHistoryEntry, index: Int) {
                 }
             )
         }
+    }
+}
+
+/** Open a link in the user's external browser instead of the WebView. */
+private fun openLinkExternally(context: android.content.Context, uri: Uri): Boolean {
+    return try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        true
+    } catch (_: Exception) {
+        Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
+        true
     }
 }
 

@@ -3,6 +3,8 @@ package com.tinyggrok.app.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.webkit.WebView
+import android.webkit.WebResourceRequest
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -616,6 +618,13 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
             WebView(context).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 settings.javaScriptEnabled = false
+                // Open <a> links in the user's external browser instead of the WebView.
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView,
+                        request: WebResourceRequest
+                    ): Boolean = openExternally(context, request.url)
+                }
                 // Zoom is handled at the screen level (pinch zooms the whole screen),
                 // so disable the WebView's own pinch zoom to avoid gesture conflicts.
                 settings.setSupportZoom(false)
@@ -632,6 +641,19 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
             webView.loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
         }
     )
+}
+
+private fun openExternally(context: android.content.Context, uri: Uri): Boolean {
+    return try {
+        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        true
+    } catch (_: Exception) {
+        Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
+        true
+    }
 }
 
 private fun colorToHex(color: androidx.compose.ui.graphics.Color): String {
