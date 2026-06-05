@@ -20,7 +20,9 @@ import javax.inject.Singleton
 
 data class ChatResult(
     val assistantMessage: String,
-    val usage: Usage? = null
+    val usage: Usage? = null,
+    val model: String = "",
+    val usedWebSearch: Boolean = false
 )
 
 @Singleton
@@ -93,6 +95,8 @@ class ChatRepository @Inject constructor(
             val baseMessage = extractText(response).ifBlank { "No response" }
             val citations = extractCitations(response)
             val assistantMessage = appendCitations(baseMessage, citations, responseFormat)
+            val usedWebSearch = response.output?.any { it.type == "web_search_call" } == true
+                    || citations.isNotEmpty()
 
             val usage = response.usage?.let {
                 Usage(
@@ -111,7 +115,7 @@ class ChatRepository @Inject constructor(
                 Log.d(TAG, "RESPONSE: $responseJson")
             }
 
-            Result.success(ChatResult(assistantMessage, usage))
+            Result.success(ChatResult(assistantMessage, usage, model = request.model, usedWebSearch = usedWebSearch))
         } catch (e: HttpException) {
             val body = try { e.response()?.errorBody()?.string().orEmpty() } catch (_: Throwable) { "" }
             if (debugMode) {

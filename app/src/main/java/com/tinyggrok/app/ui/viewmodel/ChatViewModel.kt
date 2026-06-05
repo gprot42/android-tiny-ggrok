@@ -36,7 +36,9 @@ data class ChatUiMessage(
     val role: String,
     val content: String,
     val costInfo: CostInfo? = null,
-    val hasImage: Boolean = false
+    val hasImage: Boolean = false,
+    val model: String? = null,
+    val usedWebSearch: Boolean = false
 )
 
 data class CostInfo(
@@ -202,7 +204,9 @@ class ChatViewModel @Inject constructor(
                         messages = optimisticMessages + ChatUiMessage(
                             role = "assistant",
                             content = response.assistantMessage,
-                            costInfo = costInfo
+                            costInfo = costInfo,
+                            model = response.model.ifBlank { null },
+                            usedWebSearch = response.usedWebSearch
                         ),
                         isSending = false
                     )

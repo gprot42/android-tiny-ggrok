@@ -527,6 +527,38 @@ private fun MessageItem(
                 modifier = Modifier.padding(top = 4.dp)
             )
         }
+        if (isAssistant) {
+            Row(
+                modifier = Modifier.padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Model version badge — always shown for assistant messages
+                val modelLabel = message.model
+                    ?.replaceFirstChar { it.uppercaseChar() }
+                    ?.replace("-", " ")
+                    ?: "Grok"
+                Text(
+                    text = modelLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+                // Web search badge — only shown when the model queried the web
+                if (message.usedWebSearch) {
+                    Surface(
+                        shape = MaterialTheme.shapes.extraSmall,
+                        color = MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Text(
+                            text = "Web search",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
