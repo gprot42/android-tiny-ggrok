@@ -654,7 +654,7 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
             // list instead of getting swallowed by the WebView.
             .nestedScroll(rememberNestedScrollInteropConnection()),
         factory = { context ->
-            WebView(context).apply {
+            NonScrollingWebView(context).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 settings.javaScriptEnabled = false
                 isNestedScrollingEnabled = true
@@ -681,6 +681,19 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
             webView.loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
         }
     )
+}
+
+/**
+ * WebView that never scrolls internally on the Y axis. All vertical movement is
+ * delegated to the surrounding Compose scrollable via nestedScroll interop.
+ * Without this, the WebView accumulates a non-zero internal scrollY, which offsets
+ * the tap-coordinate lookup and causes the wrong link to fire on touch.
+ */
+private class NonScrollingWebView(context: android.content.Context) : WebView(context) {
+    override fun scrollTo(x: Int, y: Int) = super.scrollTo(x, 0)
+    override fun scrollBy(x: Int, y: Int) = super.scrollBy(x, 0)
+    override fun onOverScrolled(scrollX: Int, scrollY: Int, clampedX: Boolean, clampedY: Boolean) =
+        super.onOverScrolled(scrollX, 0, clampedX, false)
 }
 
 private fun openExternally(context: android.content.Context, uri: Uri): Boolean {
