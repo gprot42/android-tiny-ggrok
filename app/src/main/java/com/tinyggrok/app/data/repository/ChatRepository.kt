@@ -197,19 +197,56 @@ class ChatRepository @Inject constructor(
         responseFormat: String
     ): String {
         val links = citations.filter { it.isNotBlank() }.distinct()
-        if (links.isEmpty()) return message
+        val body = if (responseFormat != "markdown") sanitizeHtml(message) else message
+        if (links.isEmpty()) return body
         return when (responseFormat) {
             "markdown" -> buildString {
-                append(message)
+                append(body)
                 append("\n\n**Sources**\n")
                 links.forEachIndexed { i, url -> append("${i + 1}. [$url]($url)\n") }
             }
             else -> buildString {
-                append(message)
+                append(body)
                 append("<hr><p><strong>Sources</strong></p><ol>")
                 links.forEach { url -> append("<li><a href=\"$url\">$url</a></li>") }
                 append("</ol>")
             }
         }
+    }
+
+    /**
+     * Grok sometimes returns hybrid content (HTML with embedded markdown-style
+     * fragments) even when asked for pure HTML. This pass converts the most common
+     * leakage patterns to their HTML equivalents so the WebView renders them correctly.
+     *
+     *  [[n]](url)  →  <sup><a href="url">[n]</a></sup>   (inline citation numbers)
+     *  [text](url) →  <a href="url">text</a>              (plain markdown links)
+     *  ### Heading  →  <h3>Heading</h3>   (and ## → h2, # → h1)
+     *  **text**    →  <strong>text</strong>
+     *  *text*      →  <em>text</em>
+     */
+    private fun sanitizeHtml(text: String): String {
+        var out = text
+
+        // Inline citation footnotes:  [[1]](https://...)  →  <sup><a href="...">[1]</a></sup>
+        out = out.replace(Regex("""\[\[(\d+)\]\]\(([^)]+)\)""")) { m ->
+            "<sup><a href=\"${m.groupValues[2]}\">[${m.groupValues[1]}]</a></sup>"
+        }
+
+        // Plain markdown links:  [label](url)  →  <a href="url">label</a>
+        out = out.replace(Regex("""\[([^\]]+)\]\((https?://[^)]+)\)""")) { m ->
+            "<a href=\"${m.groupValues[2]}\">${m.groupValues[1]}</a>"
+        }
+
+        // ATX headings (only if they start a line)
+        out = out.replace(Regex("""(?m)^### (.+)$""")) { m -> "<h3>${m.groupValues[1]}</h3>" }
+        out = out.replace(Regex("""(?m)^## (.+)$"""))  { m -> "<h2>${m.groupValues[1]}</h2>" }
+        out = out.replace(Regex("""(?m)^# (.+)$"""))   { m -> "<h1>${m.groupValues[1]}</h1>" }
+
+        // Bold and italic
+        out = out.replace(Regex("""\*\*(.+?)\*\*""")) { m -> "<strong>${m.groupValues[1]}</strong>" }
+        out = out.replace(Regex("""\*(.+?)\*"""))      { m -> "<em>${m.groupValues[1]}</em>" }
+
+        return out
     }
 }
