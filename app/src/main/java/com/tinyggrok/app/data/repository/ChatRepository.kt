@@ -22,7 +22,8 @@ data class ChatResult(
     val assistantMessage: String,
     val usage: Usage? = null,
     val model: String = "",
-    val usedWebSearch: Boolean = false
+    val usedWebSearch: Boolean = false,
+    val citations: List<String> = emptyList()
 )
 
 @Singleton
@@ -94,7 +95,7 @@ class ChatRepository @Inject constructor(
 
             val baseMessage = extractText(response).ifBlank { "No response" }
             val citations = extractCitations(response)
-            val assistantMessage = appendCitations(baseMessage, citations, responseFormat)
+            val assistantMessage = if (responseFormat != "markdown") sanitizeHtml(baseMessage) else baseMessage
             val usedWebSearch = response.output?.any { it.type == "web_search_call" } == true
                     || citations.isNotEmpty()
 
@@ -115,7 +116,7 @@ class ChatRepository @Inject constructor(
                 Log.d(TAG, "RESPONSE: $responseJson")
             }
 
-            Result.success(ChatResult(assistantMessage, usage, model = request.model, usedWebSearch = usedWebSearch))
+            Result.success(ChatResult(assistantMessage, usage, model = request.model, usedWebSearch = usedWebSearch, citations = citations))
         } catch (e: HttpException) {
             val body = try { e.response()?.errorBody()?.string().orEmpty() } catch (_: Throwable) { "" }
             if (debugMode) {
@@ -188,30 +189,6 @@ class ChatRepository @Inject constructor(
         }
     } catch (_: Throwable) {
         null
-    }
-
-    /** Append web-search source links so the user can see where the info came from. */
-    private fun appendCitations(
-        message: String,
-        citations: List<String>,
-        responseFormat: String
-    ): String {
-        val links = citations.filter { it.isNotBlank() }.distinct()
-        val body = if (responseFormat != "markdown") sanitizeHtml(message) else message
-        if (links.isEmpty()) return body
-        return when (responseFormat) {
-            "markdown" -> buildString {
-                append(body)
-                append("\n\n**Sources**\n")
-                links.forEachIndexed { i, url -> append("${i + 1}. [$url]($url)\n") }
-            }
-            else -> buildString {
-                append(body)
-                append("<hr><p><strong>Sources</strong></p><ol>")
-                links.forEach { url -> append("<li><a href=\"$url\">$url</a></li>") }
-                append("</ol>")
-            }
-        }
     }
 
     /**

@@ -38,7 +38,8 @@ data class ChatUiMessage(
     val costInfo: CostInfo? = null,
     val hasImage: Boolean = false,
     val model: String? = null,
-    val usedWebSearch: Boolean = false
+    val usedWebSearch: Boolean = false,
+    val citations: List<String> = emptyList()
 )
 
 data class CostInfo(
@@ -206,7 +207,8 @@ class ChatViewModel @Inject constructor(
                             content = response.assistantMessage,
                             costInfo = costInfo,
                             model = response.model.ifBlank { null },
-                            usedWebSearch = response.usedWebSearch
+                            usedWebSearch = response.usedWebSearch,
+                            citations = response.citations
                         ),
                         isSending = false
                     )

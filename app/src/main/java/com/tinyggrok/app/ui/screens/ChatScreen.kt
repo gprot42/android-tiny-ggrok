@@ -14,6 +14,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -78,6 +79,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.rememberNestedScrollInteropConnection
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -513,6 +515,7 @@ private fun MessageItem(
                 message.content
             }
             HtmlContent(html = htmlContent, fontSize = fontSize)
+            SourcesList(urls = message.citations)
         } else {
             Text(
                 text = message.content,
@@ -558,6 +561,42 @@ private fun MessageItem(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SourcesList(urls: List<String>) {
+    if (urls.isEmpty()) return
+
+    val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
+    val uniqueUrls = urls.filter { it.isNotBlank() }.distinct()
+    if (uniqueUrls.isEmpty()) return
+
+    Column(modifier = Modifier.padding(top = 8.dp)) {
+        Text(
+            text = "Sources",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        uniqueUrls.forEachIndexed { index, url ->
+            Text(
+                text = "${index + 1}. $url",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        try {
+                            uriHandler.openUri(url)
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .padding(vertical = 4.dp)
+            )
         }
     }
 }
@@ -654,7 +693,7 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
             // list instead of getting swallowed by the WebView.
             .nestedScroll(rememberNestedScrollInteropConnection()),
         factory = { context ->
-            NonScrollingWebView(context).apply {
+            WebView(context).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 settings.javaScriptEnabled = false
                 isNestedScrollingEnabled = true
@@ -681,19 +720,6 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
             webView.loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
         }
     )
-}
-
-/**
- * WebView that never scrolls internally on the Y axis. All vertical movement is
- * delegated to the surrounding Compose scrollable via nestedScroll interop.
- * Without this, the WebView accumulates a non-zero internal scrollY, which offsets
- * the tap-coordinate lookup and causes the wrong link to fire on touch.
- */
-private class NonScrollingWebView(context: android.content.Context) : WebView(context) {
-    override fun scrollTo(x: Int, y: Int) = super.scrollTo(x, 0)
-    override fun scrollBy(x: Int, y: Int) = super.scrollBy(x, 0)
-    override fun onOverScrolled(scrollX: Int, scrollY: Int, clampedX: Boolean, clampedY: Boolean) =
-        super.onOverScrolled(scrollX, 0, clampedX, false)
 }
 
 private fun openExternally(context: android.content.Context, uri: Uri): Boolean {
