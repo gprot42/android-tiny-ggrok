@@ -254,7 +254,7 @@ fun ChatScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(uiState.messages) { message ->
+                        items(uiState.messages, key = { it.id }) { message ->
                             MessageItem(
                                 message = message,
                                 showCost = uiState.showCost,
@@ -682,41 +682,58 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
         </html>
     """.trimIndent()
 
+    // Tracks the last HTML string we actually loaded so the update lambda can skip
+    // unnecessary reloads (a reload causes the WebView to flash/re-measure its height,
+    // which is the main cause of jumpy scrolling when recompositions happen).
+    val lastLoadedHtml = remember { arrayOfNulls<String>(1) }
+
     AndroidView(
         modifier = Modifier
             .fillMaxWidth()
-            // Bridge the WebView's Android nested-scroll dispatches to the Compose
-            // LazyColumn so vertical drags that start on the answer scroll the chat
-            // list instead of getting swallowed by the WebView.
             .nestedScroll(rememberNestedScrollInteropConnection()),
         factory = { context ->
-            WebView(context).apply {
+            NonScrollingWebView(context).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 settings.javaScriptEnabled = false
                 isNestedScrollingEnabled = true
-                // Open <a> links in the user's external browser instead of the WebView.
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
                         request: WebResourceRequest
                     ): Boolean = openExternally(context, request.url)
                 }
-                // Zoom is handled at the screen level (pinch zooms the whole screen),
-                // so disable the WebView's own pinch zoom to avoid gesture conflicts.
                 settings.setSupportZoom(false)
                 settings.builtInZoomControls = false
                 settings.displayZoomControls = false
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = true
-                // Long-press text selection is enabled by default
                 isLongClickable = true
+                lastLoadedHtml[0] = fullHtml
                 loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
             }
         },
         update = { webView ->
-            webView.loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
+            // Only reload when content actually changed (font size, theme, message content).
+            if (lastLoadedHtml[0] != fullHtml) {
+                lastLoadedHtml[0] = fullHtml
+                webView.loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
+            }
         }
     )
+}
+
+/**
+ * WebView that never scrolls internally on the Y axis so the surrounding LazyColumn
+ * owns all vertical scrolling. This ensures the WebView's scrollY stays 0, which
+ * means tap coordinates always map correctly to content positions (no offset) and
+ * upward swipes are immediately passed to the list instead of draining internal scroll.
+ * Sources are now native Compose rows, so there is no link hit-test concern.
+ */
+private class NonScrollingWebView(context: android.content.Context) : WebView(context) {
+    override fun scrollTo(x: Int, y: Int) = super.scrollTo(x, 0)
+    override fun scrollBy(x: Int, y: Int) = super.scrollBy(x, 0)
+    override fun onOverScrolled(scrollX: Int, scrollY: Int, clampedX: Boolean, clampedY: Boolean) =
+        super.onOverScrolled(scrollX, 0, clampedX, false)
 }
 
 private fun openExternally(context: android.content.Context, uri: Uri): Boolean {

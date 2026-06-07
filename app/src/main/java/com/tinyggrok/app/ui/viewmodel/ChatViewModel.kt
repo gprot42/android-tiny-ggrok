@@ -33,6 +33,7 @@ private const val MAX_IMAGE_DIMENSION = 1024
 private const val JPEG_QUALITY = 85
 
 data class ChatUiMessage(
+    val id: String = java.util.UUID.randomUUID().toString(),
     val role: String,
     val content: String,
     val costInfo: CostInfo? = null,
