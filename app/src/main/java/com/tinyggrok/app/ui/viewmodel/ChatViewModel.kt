@@ -22,9 +22,9 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
-/** grok-4.3 pricing: $1.25 per 1M input tokens, $2.50 per 1M output tokens */
-private const val COST_PER_INPUT_TOKEN = 1.25 / 1_000_000.0
-private const val COST_PER_OUTPUT_TOKEN = 2.50 / 1_000_000.0
+/** grok-4.5 pricing: $2.00 per 1M input tokens, $6.00 per 1M output tokens */
+private const val COST_PER_INPUT_TOKEN = 2.00 / 1_000_000.0
+private const val COST_PER_OUTPUT_TOKEN = 6.00 / 1_000_000.0
 
 /** Max dimension for resized image before base64 encoding */
 private const val MAX_IMAGE_DIMENSION = 1024

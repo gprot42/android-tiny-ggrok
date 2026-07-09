@@ -372,19 +372,20 @@ fun ChatScreen(
                 }
             }
 
+            // Prompt stays editable while a reply is in flight so the user can draft
+            // the next question. Send/Resend stay disabled until the current request finishes.
             OutlinedTextField(
                 value = uiState.prompt,
                 onValueChange = viewModel::updatePrompt,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Prompt") },
+                label = {
+                    Text(if (uiState.isSending) "Next prompt (waiting for reply…)" else "Prompt")
+                },
                 minLines = 2,
                 maxLines = 4,
-                enabled = !uiState.isSending,
+                enabled = true,
                 trailingIcon = {
-                    IconButton(
-                        onClick = { imagePicker.launch("image/*") },
-                        enabled = !uiState.isSending
-                    ) {
+                    IconButton(onClick = { imagePicker.launch("image/*") }) {
                         Icon(
                             imageVector = Icons.Outlined.Image,
                             contentDescription = "Attach image"
@@ -411,7 +412,7 @@ fun ChatScreen(
                             clipboard.setText(AnnotatedString(copyText))
                             Toast.makeText(context, "Prompt copied", Toast.LENGTH_SHORT).show()
                         },
-                        enabled = copyText.isNotEmpty() && !uiState.isSending
+                        enabled = copyText.isNotEmpty()
                     ) {
                         Text("Copy")
                     }
@@ -423,14 +424,15 @@ fun ChatScreen(
                     }
                     TextButton(
                         onClick = viewModel::clearPrompt,
-                        enabled = (uiState.prompt.isNotEmpty() || uiState.attachedImageBase64 != null) && !uiState.isSending
+                        enabled = uiState.prompt.isNotEmpty() || uiState.attachedImageBase64 != null
                     ) {
                         Text("Clear")
                     }
                     Button(
                         onClick = viewModel::sendPrompt,
                         modifier = Modifier.padding(start = 8.dp),
-                        enabled = (uiState.prompt.isNotBlank() || uiState.attachedImageBase64 != null) && !uiState.isSending
+                        enabled = (uiState.prompt.isNotBlank() || uiState.attachedImageBase64 != null) &&
+                            !uiState.isSending
                     ) {
                         Text(if (uiState.isSending) "Sending..." else "Send")
                     }
