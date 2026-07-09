@@ -2,6 +2,7 @@ package com.tinyggrok.app.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -26,12 +28,16 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.rememberNestedScrollInteropConnection
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -40,6 +46,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.tinyggrok.app.data.repository.ResponseHistoryEntry
 import com.tinyggrok.app.ui.viewmodel.HistoryViewModel
+import kotlin.math.ceil
 import org.commonmark.ext.gfm.tables.TablesExtension
 import org.commonmark.parser.Parser
 import org.commonmark.renderer.html.HtmlRenderer
@@ -151,9 +158,24 @@ private fun HistoryEntryCard(entry: ResponseHistoryEntry, index: Int) {
                 fontWeight = FontWeight.Medium
             )
 
+            // Pin WebView height to measured content so scrolling the history list
+            // doesn't jump as each card's HTML finishes loading.
+            var contentHeightPx by remember(entry.timestamp, entry.response) {
+                mutableIntStateOf(0)
+            }
+            val density = LocalDensity.current
+            val lastLoadedHtml = remember { arrayOfNulls<String>(1) }
+
+            val heightMod = if (contentHeightPx > 0) {
+                Modifier.height(with(density) { contentHeightPx.toDp() })
+            } else {
+                Modifier.height(1.dp)
+            }
+
             AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(heightMod)
                     // Forward the WebView's vertical scrolls to the surrounding
                     // scrollable Column so the history page scrolls normally.
                     .nestedScroll(rememberNestedScrollInteropConnection()),
@@ -162,25 +184,59 @@ private fun HistoryEntryCard(entry: ResponseHistoryEntry, index: Int) {
                         setBackgroundColor(android.graphics.Color.TRANSPARENT)
                         settings.javaScriptEnabled = false
                         isNestedScrollingEnabled = true
+                        isVerticalScrollBarEnabled = false
+                        overScrollMode = android.view.View.OVER_SCROLL_NEVER
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(
                                 view: WebView,
                                 request: WebResourceRequest
                             ): Boolean = openLinkExternally(ctx, request.url)
+
+                            override fun onPageFinished(view: WebView, url: String?) {
+                                view.reportContentHeight { h ->
+                                    if (h > 0) contentHeightPx = h
+                                }
+                            }
+                        }
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                if (newProgress == 100 && view != null) {
+                                    view.reportContentHeight { h ->
+                                        if (h > 0) contentHeightPx = h
+                                    }
+                                }
+                            }
                         }
                         settings.useWideViewPort = false
                         settings.loadWithOverviewMode = false
                         settings.setSupportZoom(false)
                         settings.builtInZoomControls = false
                         settings.displayZoomControls = false
+                        lastLoadedHtml[0] = fullHtml
                         loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
                     }
                 },
                 update = { wv ->
-                    wv.loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
+                    if (lastLoadedHtml[0] != fullHtml) {
+                        lastLoadedHtml[0] = fullHtml
+                        wv.loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
+                    }
                 }
             )
         }
+    }
+}
+
+/** Measure HTML content height in device pixels (contentHeight is CSS px). */
+private fun WebView.reportContentHeight(onResult: (Int) -> Unit) {
+    val density = resources.displayMetrics.density
+    fun report() {
+        if (contentHeight > 0) onResult(ceil(contentHeight * density).toInt())
+    }
+    post {
+        report()
+        postDelayed({ report() }, 50)
+        postDelayed({ report() }, 150)
     }
 }
 

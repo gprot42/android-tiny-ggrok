@@ -104,10 +104,6 @@ Thumbs.db
 *.temp
 .cache/
 
-# Sensitive files (auto-detected)
-build
-build.gradle.kts
-build.gradle.kts.bak
-build.sh
-build.sh.bak
+# Local backup copies only (keep build.gradle.kts and build.sh tracked)
+*.bak
 

@@ -2,8 +2,9 @@ package com.tinyggrok.app.ui.screens
 
 import android.content.Intent
 import android.net.Uri
-import android.webkit.WebView
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -57,17 +59,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
@@ -79,6 +78,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.rememberNestedScrollInteropConnection
 import androidx.compose.ui.text.AnnotatedString
@@ -90,6 +90,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.tinyggrok.app.ui.viewmodel.ChatUiMessage
 import com.tinyggrok.app.ui.viewmodel.ChatViewModel
+import kotlin.math.ceil
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import org.commonmark.ext.gfm.tables.TablesExtension
 import org.commonmark.parser.Parser
 import org.commonmark.renderer.html.HtmlRenderer
@@ -107,6 +111,15 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+
+    // Stable heights for assistant WebViews, keyed by message id. Without this,
+    // LazyColumn recycles items at ~0 height and jumps when content re-measures —
+    // the main cause of jarring scroll across previous results.
+    val webViewHeights = remember { mutableStateMapOf<String, Int>() }
+
+    // Stick to bottom only when the user is already near it (or on first load).
+    // If they scroll up to read earlier results, new replies won't yank them down.
+    var stickToBottom by remember { mutableStateOf(true) }
 
     // Whole-screen pinch-to-zoom state (applies to the entire chat content, not just LLM output)
     var screenScale by remember { mutableStateOf(1f) }
@@ -131,25 +144,63 @@ fun ChatScreen(
         uri?.let { viewModel.attachImage(it) }
     }
 
-    // Scroll to the sentinel (true bottom) whenever:
-    //  • a new message is added/removed
-    //  • the last message's content changes (streaming)
-    //  • the typing indicator appears/disappears
+    // Track whether the user is near the bottom so we only auto-follow new content
+    // when they already are (avoids jarring jumps while browsing earlier results).
+    // Sample only when the list is idle — mid-scroll "near bottom" is unreliable,
+    // and sampling only on nearBottom changes can miss the idle-after-scroll-up case.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.isNearBottom() }
+            .distinctUntilChanged()
+            .collect { (scrolling, nearBottom) ->
+                if (!scrolling) {
+                    stickToBottom = nearBottom
+                }
+            }
+    }
+
+    // Scroll to the sentinel (true bottom) when new messages arrive / typing toggles,
+    // but only if the user is already following the bottom of the list.
     LaunchedEffect(Unit) {
         snapshotFlow {
             Triple(
                 uiState.messages.size,
                 uiState.isSending,
-                uiState.messages.lastOrNull()?.content
+                uiState.messages.lastOrNull()?.id
             )
         }
             .distinctUntilChanged()
-            .filter { (size, _, _) -> size > 0 || uiState.isSending }
+            .filter { (size, isSending, _) -> size > 0 || isSending }
             .collect { (size, isSending, _) ->
+                // Sending always re-engages follow mode (user just submitted a prompt).
+                if (isSending) stickToBottom = true
+                if (!stickToBottom) return@collect
                 val sentinelIndex = size + (if (isSending) 1 else 0)
-                delay(80) // brief pause so layout settles before scroll
-                listState.animateScrollToItem(sentinelIndex)
+                // Instant jump: animateScrollToItem fights WebView height growth and
+                // feels more jarring when a tall answer lands.
+                delay(16)
+                listState.scrollToItem(sentinelIndex)
+                stickToBottom = true
             }
+    }
+
+    // When the last assistant message finishes measuring its WebView height, pin
+    // back to the bottom so the newly expanded answer doesn't leave a gap.
+    val lastAssistantId = uiState.messages.lastOrNull { it.role == "assistant" }?.id
+    val lastAssistantHeight = lastAssistantId?.let { webViewHeights[it] }
+    LaunchedEffect(lastAssistantId, lastAssistantHeight, uiState.isSending) {
+        if (!stickToBottom || lastAssistantHeight == null || lastAssistantHeight <= 0) return@LaunchedEffect
+        val sentinelIndex = uiState.messages.size + (if (uiState.isSending) 1 else 0)
+        listState.scrollToItem(sentinelIndex)
+    }
+
+    // Drop height cache entries for messages that are no longer in the list.
+    LaunchedEffect(uiState.messages) {
+        if (uiState.messages.isEmpty()) {
+            webViewHeights.clear()
+        } else {
+            val liveIds = uiState.messages.map { it.id }.toSet()
+            webViewHeights.keys.retainAll(liveIds)
+        }
     }
 
     Scaffold(
@@ -260,6 +311,12 @@ fun ChatScreen(
                                 showCost = uiState.showCost,
                                 responseFormat = uiState.responseFormat,
                                 fontSize = uiState.fontSize,
+                                cachedWebViewHeightPx = webViewHeights[message.id] ?: 0,
+                                onWebViewHeight = { h ->
+                                    if (h > 0 && webViewHeights[message.id] != h) {
+                                        webViewHeights[message.id] = h
+                                    }
+                                },
                                 onShare = { text ->
                                     val intent = Intent(Intent.ACTION_SEND).apply {
                                         type = "text/plain"
@@ -459,6 +516,8 @@ private fun MessageItem(
     showCost: Boolean,
     responseFormat: String,
     fontSize: Float,
+    cachedWebViewHeightPx: Int = 0,
+    onWebViewHeight: (Int) -> Unit = {},
     onShare: ((String) -> Unit)? = null
 ) {
     val clipboard = LocalClipboardManager.current
@@ -543,7 +602,12 @@ private fun MessageItem(
             } else {
                 message.content
             }
-            HtmlContent(html = htmlContent, fontSize = fontSize)
+            HtmlContent(
+                html = htmlContent,
+                fontSize = fontSize,
+                cachedHeightPx = cachedWebViewHeightPx,
+                onHeightMeasured = onWebViewHeight
+            )
             SourcesList(urls = message.citations)
         } else {
             Text(
@@ -607,10 +671,16 @@ private fun markdownToHtml(markdown: String): String {
 }
 
 @Composable
-private fun HtmlContent(html: String, fontSize: Float = 14f) {
+private fun HtmlContent(
+    html: String,
+    fontSize: Float = 14f,
+    cachedHeightPx: Int = 0,
+    onHeightMeasured: (Int) -> Unit = {}
+) {
     val bgColor = MaterialTheme.colorScheme.surface
     val textColor = MaterialTheme.colorScheme.onSurface
     val linkColor = MaterialTheme.colorScheme.primary
+    val density = LocalDensity.current
     val fullHtml = """
         <html>
         <head>
@@ -686,21 +756,62 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
     // unnecessary reloads (a reload causes the WebView to flash/re-measure its height,
     // which is the main cause of jumpy scrolling when recompositions happen).
     val lastLoadedHtml = remember { arrayOfNulls<String>(1) }
+    // Prefer the cached height from the parent so recycled list items keep a stable
+    // size while the WebView reloads; fall back to live measurement.
+    var measuredHeightPx by remember { mutableIntStateOf(cachedHeightPx) }
+    LaunchedEffect(cachedHeightPx) {
+        if (cachedHeightPx > 0 && cachedHeightPx != measuredHeightPx) {
+            measuredHeightPx = cachedHeightPx
+        }
+    }
+    val onHeightMeasuredState = rememberUpdatedState(onHeightMeasured)
+
+    val heightModifier = if (measuredHeightPx > 0) {
+        Modifier.height(with(density) { measuredHeightPx.toDp() })
+    } else {
+        // Placeholder until first measure so the item doesn't claim the whole viewport.
+        Modifier.height(1.dp)
+    }
 
     AndroidView(
         modifier = Modifier
             .fillMaxWidth()
+            .then(heightModifier)
             .nestedScroll(rememberNestedScrollInteropConnection()),
         factory = { context ->
             NonScrollingWebView(context).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 settings.javaScriptEnabled = false
                 isNestedScrollingEnabled = true
+                isVerticalScrollBarEnabled = false
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = android.view.View.OVER_SCROLL_NEVER
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
                         request: WebResourceRequest
                     ): Boolean = openExternally(context, request.url)
+
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        view.measureContentHeight { h ->
+                            if (h > 0) {
+                                measuredHeightPx = h
+                                onHeightMeasuredState.value(h)
+                            }
+                        }
+                    }
+                }
+                webChromeClient = object : WebChromeClient() {
+                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                        if (newProgress == 100 && view != null) {
+                            view.measureContentHeight { h ->
+                                if (h > 0) {
+                                    measuredHeightPx = h
+                                    onHeightMeasuredState.value(h)
+                                }
+                            }
+                        }
+                    }
                 }
                 settings.setSupportZoom(false)
                 settings.builtInZoomControls = false
@@ -720,6 +831,39 @@ private fun HtmlContent(html: String, fontSize: Float = 14f) {
             }
         }
     )
+}
+
+/**
+ * Measure the laid-out HTML content height in device pixels using
+ * [WebView.getContentHeight] (CSS px × density). Retries briefly because
+ * contentHeight often lags a frame or two after [WebViewClient.onPageFinished].
+ */
+private fun WebView.measureContentHeight(onResult: (Int) -> Unit) {
+    val density = resources.displayMetrics.density
+    fun currentHeightPx(): Int =
+        if (contentHeight > 0) ceil(contentHeight * density).toInt() else 0
+
+    fun report() {
+        val h = currentHeightPx()
+        if (h > 0) onResult(h)
+    }
+
+    post {
+        report()
+        // contentHeight often settles shortly after onPageFinished
+        postDelayed({ report() }, 50)
+        postDelayed({ report() }, 150)
+    }
+}
+
+/** True when the last list item is visible (or the list is empty / not laid out yet). */
+private fun LazyListState.isNearBottom(): Boolean {
+    val info = layoutInfo
+    val total = info.totalItemsCount
+    if (total == 0) return true
+    val lastVisible = info.visibleItemsInfo.lastOrNull() ?: return true
+    // "Near bottom" = last item is on screen, or within ~1 item of the end.
+    return lastVisible.index >= total - 2
 }
 
 /**
