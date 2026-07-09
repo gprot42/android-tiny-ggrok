@@ -7,6 +7,7 @@ import android.net.Uri
 import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.tinyggrok.app.AppDefaults
 import com.tinyggrok.app.data.local.SettingsRepository
 import com.tinyggrok.app.data.model.Message
 import com.tinyggrok.app.data.model.TextContent
@@ -22,15 +23,17 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
-/** grok-4.5 pricing: $2.00 per 1M input tokens, $6.00 per 1M output tokens */
-private const val COST_PER_INPUT_TOKEN = 2.00 / 1_000_000.0
-private const val COST_PER_OUTPUT_TOKEN = 6.00 / 1_000_000.0
-
 /** Max dimension for resized image before base64 encoding */
 private const val MAX_IMAGE_DIMENSION = 1024
 
 /** JPEG quality for base64 encoding */
 private const val JPEG_QUALITY = 85
+
+/** Per-1M-token prices (input, output) for known chat models. */
+private fun costRatesPerMillion(model: String): Pair<Double, Double> = when (model) {
+    AppDefaults.MODEL_GROK_4_5 -> 2.00 to 6.00
+    else -> 1.25 to 2.50 // grok-4.3 default
+}
 
 data class ChatUiMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -65,6 +68,7 @@ data class ChatUiState(
     val debugMode: Boolean = false,
     val responseFormat: String = "html",
     val fontSize: Float = 14f,
+    val chatModel: String = AppDefaults.DEFAULT_MODEL,
     val lastSentPrompt: String = ""
 )
 
@@ -98,6 +102,11 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.fontSize.collect { size ->
                 _uiState.value = _uiState.value.copy(fontSize = size)
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.chatModel.collect { model ->
+                _uiState.value = _uiState.value.copy(chatModel = model)
             }
         }
     }
@@ -148,6 +157,7 @@ class ChatViewModel @Inject constructor(
             }
 
             val debugMode = settingsRepository.debugMode.first()
+            val chatModel = settingsRepository.chatModel.first()
             val previousMessages = _uiState.value.messages
             val displayText = prompt.ifEmpty { "[Image]" }
             val optimisticMessages = previousMessages + ChatUiMessage(
@@ -184,13 +194,15 @@ class ChatViewModel @Inject constructor(
                 imageBase64 = imageBase64,
                 history = history,
                 debugMode = debugMode,
-                responseFormat = _uiState.value.responseFormat
+                responseFormat = _uiState.value.responseFormat,
+                model = chatModel
             )
             _uiState.value = result.fold(
                 onSuccess = { response ->
                     val costInfo = response.usage?.let { usage ->
-                        val cost = usage.prompt_tokens * COST_PER_INPUT_TOKEN +
-                                usage.completion_tokens * COST_PER_OUTPUT_TOKEN
+                        val (inPerM, outPerM) = costRatesPerMillion(chatModel)
+                        val cost = usage.prompt_tokens * (inPerM / 1_000_000.0) +
+                                usage.completion_tokens * (outPerM / 1_000_000.0)
                         CostInfo(
                             promptTokens = usage.prompt_tokens,
                             completionTokens = usage.completion_tokens,

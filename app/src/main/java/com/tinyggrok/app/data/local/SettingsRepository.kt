@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.tinyggrok.app.AppDefaults
 import com.tinyggrok.app.ui.theme.AppTheme
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +29,7 @@ class SettingsRepository @Inject constructor(
     private val DEBUG_MODE_KEY = booleanPreferencesKey("debug_mode")
     private val RESPONSE_FORMAT_KEY = stringPreferencesKey("response_format")
     private val FONT_SIZE_KEY = floatPreferencesKey("font_size")
+    private val CHAT_MODEL_KEY = stringPreferencesKey("chat_model")
     private val VOICE_ENABLED_KEY = booleanPreferencesKey("voice_enabled")
     private val VOICE_TARGET_LANGUAGE_KEY = stringPreferencesKey("voice_target_language")
     private val VOICE_SOURCE_LANGUAGE_KEY = stringPreferencesKey("voice_source_language")
@@ -60,6 +62,12 @@ class SettingsRepository @Inject constructor(
 
     val fontSize: Flow<Float> = context.dataStore.data
         .map { preferences -> preferences[FONT_SIZE_KEY] ?: 14f }
+
+    /** Chat model id (e.g. grok-4.3 / grok-4.5). Defaults to [AppDefaults.DEFAULT_MODEL]. */
+    val chatModel: Flow<String> = context.dataStore.data
+        .map { preferences ->
+            AppDefaults.normalizeChatModel(preferences[CHAT_MODEL_KEY])
+        }
 
     val voiceEnabled: Flow<Boolean> = context.dataStore.data
         .map { preferences -> preferences[VOICE_ENABLED_KEY] ?: true }
@@ -124,6 +132,12 @@ class SettingsRepository @Inject constructor(
     suspend fun saveFontSize(size: Float) {
         context.dataStore.edit { preferences ->
             preferences[FONT_SIZE_KEY] = size
+        }
+    }
+
+    suspend fun saveChatModel(model: String) {
+        context.dataStore.edit { preferences ->
+            preferences[CHAT_MODEL_KEY] = AppDefaults.normalizeChatModel(model)
         }
     }
 

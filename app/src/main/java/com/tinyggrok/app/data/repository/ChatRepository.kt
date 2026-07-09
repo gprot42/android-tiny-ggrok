@@ -3,6 +3,7 @@ package com.tinyggrok.app.data.repository
 import android.util.Log
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonElement
+import com.tinyggrok.app.AppDefaults
 import com.tinyggrok.app.data.api.XaiApiService
 import com.tinyggrok.app.data.model.InputContent
 import com.tinyggrok.app.data.model.InputMessage
@@ -40,7 +41,8 @@ class ChatRepository @Inject constructor(
         imageBase64: String?,
         history: List<Message>,
         debugMode: Boolean = false,
-        responseFormat: String = "html"
+        responseFormat: String = "html",
+        model: String = AppDefaults.DEFAULT_MODEL
     ): Result<ChatResult> {
         return try {
             val instructions = when (responseFormat) {
@@ -74,6 +76,7 @@ class ChatRepository @Inject constructor(
             }
 
             val request = ResponsesRequest(
+                model = model,
                 input = input,
                 instructions = instructions,
                 tools = listOf(ResponseTool(type = "web_search"))

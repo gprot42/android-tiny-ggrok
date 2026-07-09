@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VpnKey
+import com.tinyggrok.app.AppDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
@@ -154,6 +155,21 @@ fun SettingsScreen(
 
             // ── Chat ─────────────────────────────────────────────────────────
             SettingsSection(title = "Chat", icon = Icons.Default.TextFields) {
+                SectionLabel("Model")
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    AppDefaults.CHAT_MODELS.forEachIndexed { index, (label, id) ->
+                        SegmentedButton(
+                            selected = uiState.chatModel == id,
+                            onClick = { viewModel.updateChatModel(id) },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = AppDefaults.CHAT_MODELS.size
+                            )
+                        ) { Text(label, maxLines = 1) }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
                 SectionLabel("Response format")
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                     listOf("HTML" to "html", "Markdown" to "markdown")

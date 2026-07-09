@@ -1,11 +1,12 @@
 # Tiny Grok - Android Client
 
-A lightweight native Android app for chatting with xAI's Grok 4.5 model.
+A lightweight native Android app for chatting with xAI's Grok models.
 
 ## Features
 - Secure API key entry and storage in Settings
 - Three themes: Light, Dark, Tokyo Night
-- Uses Grok 4.5 via xAI Agent Tools / Responses API (`https://api.x.ai/v1/responses`)
+- Chat models: **Grok 4.3** (default) or **Grok 4.5** — selectable in Settings
+- Uses xAI Agent Tools / Responses API (`https://api.x.ai/v1/responses`)
 - **Live web search**: when Grok is unsure or a question depends on recent/factual
   information, it automatically uses the `web_search` tool to look it up instead of
   guessing. Source links are appended to the answer and are clickable (open in your

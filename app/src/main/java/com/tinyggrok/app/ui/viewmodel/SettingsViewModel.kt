@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaPlayer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.tinyggrok.app.AppDefaults
 import com.tinyggrok.app.data.local.SettingsRepository
 import com.tinyggrok.app.data.model.PersonalityMode
 import com.tinyggrok.app.data.model.VoiceOption
@@ -30,6 +31,7 @@ data class SettingsUiState(
     val debugMode: Boolean = false,
     val responseFormat: String = "html",
     val fontSize: Float = 14f,
+    val chatModel: String = AppDefaults.DEFAULT_MODEL,
     val voiceEnabled: Boolean = true,
     val voiceOption: VoiceOption = VoiceOption.EVE,
     val personalityMode: PersonalityMode = PersonalityMode.ASSISTANT,
@@ -84,6 +86,11 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.fontSize.collect { size ->
                 _uiState.value = _uiState.value.copy(fontSize = size)
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.chatModel.collect { model ->
+                _uiState.value = _uiState.value.copy(chatModel = model)
             }
         }
         viewModelScope.launch {
@@ -272,6 +279,12 @@ class SettingsViewModel @Inject constructor(
     fun updateFontSize(size: Float) {
         _uiState.value = _uiState.value.copy(fontSize = size, savedMessage = null)
         viewModelScope.launch { settingsRepository.saveFontSize(size) }
+    }
+
+    fun updateChatModel(model: String) {
+        val normalized = AppDefaults.normalizeChatModel(model)
+        _uiState.value = _uiState.value.copy(chatModel = normalized, savedMessage = null)
+        viewModelScope.launch { settingsRepository.saveChatModel(normalized) }
     }
 
     fun updateVoiceEnabled(enabled: Boolean) {
