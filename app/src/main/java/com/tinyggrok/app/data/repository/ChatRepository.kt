@@ -117,7 +117,7 @@ class ChatRepository @Inject constructor(
                             "(and UK postcode if given), then search National Rail / TfL from those origins. " +
                             "Do NOT treat a reverse-geocoded town or district name as definitive if it " +
                             "conflicts with the coordinates — UK geocoders often name a neighbouring " +
-                            "town or district HQ (e.g. wrong Essex district). " +
+                            "town or district HQ. " +
                             "If accuracy is marked coarse, only use coordinates, never invent a town."
                     )
                 }
