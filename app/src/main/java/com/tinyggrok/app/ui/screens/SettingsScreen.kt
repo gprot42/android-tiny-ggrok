@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VpnKey
 import com.tinyggrok.app.AppDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
@@ -54,9 +55,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -266,7 +267,7 @@ fun SettingsScreen(
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(12.dp))
-                    GpsCacheTimeoutSlider(
+                    GpsCacheTimeoutPicker(
                         minutes = uiState.locationCacheTimeoutMinutes,
                         onMinutesChange = viewModel::updateLocationCacheTimeoutMinutes
                     )
@@ -668,22 +669,36 @@ private inline fun Box(
 )
 
 // ────────────────────────────────────────────────────────────────────────────
-// GPS cache timeout (minutes)
+// GPS cache timeout (presets + custom)
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
  * How long a GPS fix is reused before the next chip lookup.
- * Discrete presets keep the UI simple; default is 10 minutes (battery-friendly TTL cache).
+ * Presets: 10m, 15m, 30m, 1h, 2h, or Custom (enter minutes). Default 10m.
  */
 @Composable
-private fun GpsCacheTimeoutSlider(
+private fun GpsCacheTimeoutPicker(
     minutes: Int,
     onMinutesChange: (Int) -> Unit
 ) {
-    val presets = listOf(1, 5, 10, 15, 30, 60)
     val active = SettingsRepository.normalizeLocationCacheTimeoutMinutes(minutes)
-    // Snap UI highlight to nearest preset for display; value can still be any 1–60 from slider.
-    val nearestPreset = presets.minByOrNull { abs(it - active) } ?: 10
+    val isCustom = !SettingsRepository.isLocationCacheTimeoutPreset(active)
+    var showCustomDialog by remember { mutableStateOf(false) }
+    var customDraft by remember(active) {
+        mutableStateOf(active.toString())
+    }
+
+    // Chip options: fixed presets + Custom
+    data class TimeoutOption(val label: String, val minutes: Int?) // null = custom
+
+    val options = listOf(
+        TimeoutOption("10m", 10),
+        TimeoutOption("15m", 15),
+        TimeoutOption("30m", 30),
+        TimeoutOption("1h", 60),
+        TimeoutOption("2h", 120),
+        TimeoutOption("Custom", null)
+    )
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -705,24 +720,20 @@ private fun GpsCacheTimeoutSlider(
         }
         Text(
             text = "Reuse the last GPS fix for this long without waking the chip again. " +
-                "Shorter = fresher after walking; longer = fewer lookups (default 10 min).",
+                "Default 10 minutes.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Slider(
-            value = active.toFloat(),
-            onValueChange = { onMinutesChange(it.roundToInt()) },
-            valueRange = SettingsRepository.MIN_LOCATION_CACHE_TIMEOUT_MINUTES.toFloat()..
-                SettingsRepository.MAX_LOCATION_CACHE_TIMEOUT_MINUTES.toFloat(),
-            steps = SettingsRepository.MAX_LOCATION_CACHE_TIMEOUT_MINUTES -
-                SettingsRepository.MIN_LOCATION_CACHE_TIMEOUT_MINUTES - 1
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            presets.forEach { preset ->
-                val selected = nearestPreset == preset && abs(active - preset) <= 1
+            options.forEach { option ->
+                val selected = if (option.minutes == null) {
+                    isCustom
+                } else {
+                    active == option.minutes
+                }
                 val bg = if (selected) {
                     MaterialTheme.colorScheme.primaryContainer
                 } else {
@@ -738,26 +749,99 @@ private fun GpsCacheTimeoutSlider(
                         .weight(1f)
                         .clip(RoundedCornerShape(8.dp))
                         .background(bg)
-                        .clickable { onMinutesChange(preset) }
-                        .padding(vertical = 8.dp),
+                        .clickable {
+                            if (option.minutes != null) {
+                                onMinutesChange(option.minutes)
+                            } else {
+                                customDraft = active.toString()
+                                showCustomDialog = true
+                            }
+                        }
+                        .padding(vertical = 10.dp, horizontal = 2.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = if (preset < 60) "${preset}m" else "1h",
+                        text = option.label,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                        color = fg
+                        color = fg,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
                     )
                 }
             }
         }
     }
+
+    if (showCustomDialog) {
+        val parsed = customDraft.toIntOrNull()
+        val valid = parsed != null &&
+            parsed in SettingsRepository.MIN_LOCATION_CACHE_TIMEOUT_MINUTES..
+            SettingsRepository.MAX_LOCATION_CACHE_TIMEOUT_MINUTES
+        AlertDialog(
+            onDismissRequest = { showCustomDialog = false },
+            title = { Text("Custom GPS cache timeout") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Enter minutes (1–${SettingsRepository.MAX_LOCATION_CACHE_TIMEOUT_MINUTES}).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = customDraft,
+                        onValueChange = { draft ->
+                            if (draft.isEmpty() || draft.all { it.isDigit() }) {
+                                customDraft = draft.take(5)
+                            }
+                        },
+                        label = { Text("Minutes") },
+                        singleLine = true,
+                        isError = customDraft.isNotEmpty() && !valid,
+                        supportingText = {
+                            if (customDraft.isNotEmpty() && !valid) {
+                                Text("Enter a number from 1 to ${SettingsRepository.MAX_LOCATION_CACHE_TIMEOUT_MINUTES}")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (parsed != null && valid) {
+                            onMinutesChange(parsed)
+                            showCustomDialog = false
+                        }
+                    },
+                    enabled = valid
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 private fun formatCacheTimeoutLabel(minutes: Int): String = when {
     minutes < 60 -> if (minutes == 1) "1 minute" else "$minutes minutes"
-    minutes == 60 -> "1 hour"
-    else -> "$minutes minutes"
+    minutes % 60 == 0 -> {
+        val h = minutes / 60
+        if (h == 1) "1 hour" else "$h hours"
+    }
+    else -> {
+        val h = minutes / 60
+        val m = minutes % 60
+        if (h == 0) "$m minutes"
+        else if (h == 1) "1 h $m m"
+        else "$h h $m m"
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -235,7 +235,12 @@ class SettingsRepository @Inject constructor(
     companion object {
         const val DEFAULT_LOCATION_CACHE_TIMEOUT_MINUTES = 10
         const val MIN_LOCATION_CACHE_TIMEOUT_MINUTES = 1
-        const val MAX_LOCATION_CACHE_TIMEOUT_MINUTES = 60
+        /** Upper bound for custom values (24 h). Presets go up to 2 h. */
+        const val MAX_LOCATION_CACHE_TIMEOUT_MINUTES = 24 * 60
+
+        /** Built-in chips in Settings (minutes). Values outside this list are “custom”. */
+        val LOCATION_CACHE_TIMEOUT_PRESETS_MINUTES: List<Int> =
+            listOf(10, 15, 30, 60, 120)
 
         fun normalizeLocationCacheTimeoutMinutes(minutes: Int?): Int {
             val m = minutes ?: DEFAULT_LOCATION_CACHE_TIMEOUT_MINUTES
@@ -244,5 +249,10 @@ class SettingsRepository @Inject constructor(
                 MAX_LOCATION_CACHE_TIMEOUT_MINUTES
             )
         }
+
+        fun isLocationCacheTimeoutPreset(minutes: Int): Boolean =
+            LOCATION_CACHE_TIMEOUT_PRESETS_MINUTES.contains(
+                normalizeLocationCacheTimeoutMinutes(minutes)
+            )
     }
 }
