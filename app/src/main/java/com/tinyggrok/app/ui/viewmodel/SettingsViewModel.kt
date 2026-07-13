@@ -33,6 +33,8 @@ data class SettingsUiState(
     val fontSize: Float = 14f,
     val chatModel: String = AppDefaults.DEFAULT_MODEL,
     val voiceEnabled: Boolean = true,
+    /** GPS / approximate location for chat (default on). */
+    val locationEnabled: Boolean = true,
     val voiceOption: VoiceOption = VoiceOption.EVE,
     val personalityMode: PersonalityMode = PersonalityMode.ASSISTANT,
     val savedMessage: String? = null,
@@ -96,6 +98,11 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.voiceEnabled.collect { enabled ->
                 _uiState.value = _uiState.value.copy(voiceEnabled = enabled)
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.locationEnabled.collect { enabled ->
+                _uiState.value = _uiState.value.copy(locationEnabled = enabled)
             }
         }
         viewModelScope.launch {
@@ -290,6 +297,11 @@ class SettingsViewModel @Inject constructor(
     fun updateVoiceEnabled(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(voiceEnabled = enabled, savedMessage = null)
         viewModelScope.launch { settingsRepository.saveVoiceEnabled(enabled) }
+    }
+
+    fun updateLocationEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(locationEnabled = enabled, savedMessage = null)
+        viewModelScope.launch { settingsRepository.saveLocationEnabled(enabled) }
     }
 
     fun updateVoiceOption(option: VoiceOption) {

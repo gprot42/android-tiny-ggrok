@@ -38,6 +38,8 @@ class SettingsRepository @Inject constructor(
     private val VOICE_SILENT_MODE_KEY = booleanPreferencesKey("voice_silent_mode")
     private val VOICE_VAD_THRESHOLD_KEY = floatPreferencesKey("voice_vad_threshold")
     private val VOICE_PERMANENT_LISTEN_KEY = booleanPreferencesKey("voice_permanent_listen")
+    /** When true (default), chat may attach approximate GPS location to prompts if permitted. */
+    private val LOCATION_ENABLED_KEY = booleanPreferencesKey("location_enabled")
 
     val apiKey: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[API_KEY_KEY] }
@@ -92,6 +94,10 @@ class SettingsRepository @Inject constructor(
 
     val voicePermanentListen: Flow<Boolean> = context.dataStore.data
         .map { preferences -> preferences[VOICE_PERMANENT_LISTEN_KEY] ?: false }
+
+    /** GPS / approximate location for chat context. Default on; user can disable. */
+    val locationEnabled: Flow<Boolean> = context.dataStore.data
+        .map { preferences -> preferences[LOCATION_ENABLED_KEY] ?: true }
 
     suspend fun saveApiKey(key: String) {
         context.dataStore.edit { preferences ->
@@ -186,6 +192,12 @@ class SettingsRepository @Inject constructor(
     suspend fun saveVoicePermanentListen(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[VOICE_PERMANENT_LISTEN_KEY] = enabled
+        }
+    }
+
+    suspend fun saveLocationEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[LOCATION_ENABLED_KEY] = enabled
         }
     }
 

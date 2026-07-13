@@ -8,6 +8,7 @@ import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tinyggrok.app.AppDefaults
+import com.tinyggrok.app.data.local.LocationRepository
 import com.tinyggrok.app.data.local.SettingsRepository
 import com.tinyggrok.app.data.model.Message
 import com.tinyggrok.app.data.model.TextContent
@@ -69,13 +70,16 @@ data class ChatUiState(
     val responseFormat: String = "html",
     val fontSize: Float = 14f,
     val chatModel: String = AppDefaults.DEFAULT_MODEL,
-    val lastSentPrompt: String = ""
+    val lastSentPrompt: String = "",
+    /** When true, chat attaches approximate GPS (if OS permission granted). */
+    val locationEnabled: Boolean = true
 )
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val settingsRepository: SettingsRepository,
+    private val locationRepository: LocationRepository,
     private val debugLogRepository: DebugLogRepository,
     private val responseHistoryRepository: ResponseHistoryRepository,
     @ApplicationContext private val context: Context
@@ -107,6 +111,11 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.chatModel.collect { model ->
                 _uiState.value = _uiState.value.copy(chatModel = model)
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.locationEnabled.collect { enabled ->
+                _uiState.value = _uiState.value.copy(locationEnabled = enabled)
             }
         }
     }
@@ -188,6 +197,15 @@ class ChatViewModel @Inject constructor(
                         .reversed()
                 }
                 .map { msg -> Message(role = msg.role, text = msg.content) }
+
+            val locationContext = if (settingsRepository.locationEnabled.first()) {
+                runCatching {
+                    locationRepository.getApproximateLocation()?.toInstructionSnippet()
+                }.getOrNull()
+            } else {
+                null
+            }
+
             val result = chatRepository.sendMessage(
                 apiKey = apiKey,
                 text = prompt,
@@ -195,7 +213,8 @@ class ChatViewModel @Inject constructor(
                 history = history,
                 debugMode = debugMode,
                 responseFormat = _uiState.value.responseFormat,
-                model = chatModel
+                model = chatModel,
+                locationContext = locationContext
             )
             _uiState.value = result.fold(
                 onSuccess = { response ->

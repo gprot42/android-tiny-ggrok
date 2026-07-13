@@ -24,8 +24,20 @@ data class ResponsesRequest(
     val store: Boolean = false
 )
 
+/**
+ * Built-in tool config for the Responses API.
+ * For [type] = `"web_search"`, optional [filters] can restrict domains (max 5).
+ */
 data class ResponseTool(
-    val type: String
+    val type: String,
+    val filters: WebSearchFilters? = null
+)
+
+data class WebSearchFilters(
+    @SerializedName("allowed_domains")
+    val allowedDomains: List<String>? = null,
+    @SerializedName("excluded_domains")
+    val excludedDomains: List<String>? = null
 )
 
 /**

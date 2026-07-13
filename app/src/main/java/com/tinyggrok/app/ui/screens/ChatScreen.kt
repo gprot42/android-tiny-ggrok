@@ -1,6 +1,11 @@
 package com.tinyggrok.app.ui.screens
 
+import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -9,13 +14,15 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -142,6 +149,41 @@ fun ChatScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let { viewModel.attachImage(it) }
+    }
+
+    // Ask for location once when GPS is on and the user sends (then send either way).
+    var locationPermissionAsked by remember { mutableStateOf(false) }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        viewModel.sendPrompt()
+    }
+
+    fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return fine || coarse
+    }
+
+    fun sendWithOptionalLocationPermission() {
+        if (uiState.locationEnabled &&
+            !hasLocationPermission() &&
+            !locationPermissionAsked
+        ) {
+            locationPermissionAsked = true
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        } else {
+            viewModel.sendPrompt()
+        }
     }
 
     // Track whether the user is near the bottom so we only auto-follow new content
@@ -417,7 +459,13 @@ fun ChatScreen(
                         Text("Copy")
                     }
                     TextButton(
-                        onClick = viewModel::resendLastPrompt,
+                        onClick = {
+                            val last = uiState.lastSentPrompt
+                            if (last.isNotBlank() && !uiState.isSending) {
+                                viewModel.updatePrompt(last)
+                                sendWithOptionalLocationPermission()
+                            }
+                        },
                         enabled = uiState.lastSentPrompt.isNotBlank() && !uiState.isSending
                     ) {
                         Text("Resend")
@@ -429,7 +477,7 @@ fun ChatScreen(
                         Text("Clear")
                     }
                     Button(
-                        onClick = viewModel::sendPrompt,
+                        onClick = { sendWithOptionalLocationPermission() },
                         modifier = Modifier.padding(start = 8.dp),
                         enabled = (uiState.prompt.isNotBlank() || uiState.attachedImageBase64 != null) &&
                             !uiState.isSending
@@ -628,12 +676,14 @@ private fun MessageItem(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SourcesList(urls: List<String>) {
     if (urls.isEmpty()) return
 
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val uniqueUrls = urls.filter { it.isNotBlank() }.distinct()
     if (uniqueUrls.isEmpty()) return
 
@@ -644,6 +694,12 @@ private fun SourcesList(urls: List<String>) {
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface
         )
+        Text(
+            text = "Tap to open · hold to copy",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.padding(bottom = 2.dp)
+        )
         uniqueUrls.forEachIndexed { index, url ->
             Text(
                 text = "${index + 1}. $url",
@@ -651,13 +707,23 @@ private fun SourcesList(urls: List<String>) {
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable {
-                        try {
-                            uriHandler.openUri(url)
-                        } catch (_: Exception) {
-                            Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
+                    .combinedClickable(
+                        onClick = {
+                            try {
+                                uriHandler.openUri(url)
+                            } catch (_: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    "No app can open this link",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        onLongClick = {
+                            clipboard.setText(AnnotatedString(url))
+                            Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
                         }
-                    }
+                    )
                     .padding(vertical = 4.dp)
             )
         }
@@ -821,6 +887,23 @@ private fun HtmlContent(
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = true
                 isLongClickable = true
+                // Hold a link to copy its URL (tap still opens via shouldOverrideUrlLoading).
+                setOnLongClickListener { view ->
+                    val webView = view as WebView
+                    val result = webView.hitTestResult
+                    val url = when (result.type) {
+                        WebView.HitTestResult.SRC_ANCHOR_TYPE,
+                        WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> result.extra
+                        else -> null
+                    }
+                    if (!url.isNullOrBlank()) {
+                        copyTextToClipboard(context, url, label = "link")
+                        Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+                        true
+                    } else {
+                        false
+                    }
+                }
                 lastLoadedHtml[0] = fullHtml
                 loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
             }
@@ -893,6 +976,11 @@ private fun openExternally(context: android.content.Context, uri: Uri): Boolean 
         Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
         true
     }
+}
+
+private fun copyTextToClipboard(context: Context, text: String, label: String = "text") {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText(label, text))
 }
 
 private fun colorToHex(color: androidx.compose.ui.graphics.Color): String {
