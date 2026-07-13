@@ -81,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.tinyggrok.app.data.local.SettingsRepository
 import com.tinyggrok.app.ui.theme.AppTheme
 import com.tinyggrok.app.ui.viewmodel.SettingsViewModel
 import kotlin.math.abs
@@ -260,6 +261,16 @@ fun SettingsScreen(
                         }
                     }
                 )
+
+                if (uiState.locationEnabled) {
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))
+                    GpsCacheTimeoutSlider(
+                        minutes = uiState.locationCacheTimeoutMinutes,
+                        onMinutesChange = viewModel::updateLocationCacheTimeoutMinutes
+                    )
+                }
             }
 
             // ── Voice Translator ─────────────────────────────────────────────
@@ -655,6 +666,99 @@ private inline fun Box(
     contentAlignment = contentAlignment,
     content = { content() }
 )
+
+// ────────────────────────────────────────────────────────────────────────────
+// GPS cache timeout (minutes)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How long a GPS fix is reused before the next chip lookup.
+ * Discrete presets keep the UI simple; default is 10 minutes (battery-friendly TTL cache).
+ */
+@Composable
+private fun GpsCacheTimeoutSlider(
+    minutes: Int,
+    onMinutesChange: (Int) -> Unit
+) {
+    val presets = listOf(1, 5, 10, 15, 30, 60)
+    val active = SettingsRepository.normalizeLocationCacheTimeoutMinutes(minutes)
+    // Snap UI highlight to nearest preset for display; value can still be any 1–60 from slider.
+    val nearestPreset = presets.minByOrNull { abs(it - active) } ?: 10
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "GPS cache timeout",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = formatCacheTimeoutLabel(active),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Text(
+            text = "Reuse the last GPS fix for this long without waking the chip again. " +
+                "Shorter = fresher after walking; longer = fewer lookups (default 10 min).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Slider(
+            value = active.toFloat(),
+            onValueChange = { onMinutesChange(it.roundToInt()) },
+            valueRange = SettingsRepository.MIN_LOCATION_CACHE_TIMEOUT_MINUTES.toFloat()..
+                SettingsRepository.MAX_LOCATION_CACHE_TIMEOUT_MINUTES.toFloat(),
+            steps = SettingsRepository.MAX_LOCATION_CACHE_TIMEOUT_MINUTES -
+                SettingsRepository.MIN_LOCATION_CACHE_TIMEOUT_MINUTES - 1
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            presets.forEach { preset ->
+                val selected = nearestPreset == preset && abs(active - preset) <= 1
+                val bg = if (selected) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                }
+                val fg = if (selected) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(bg)
+                        .clickable { onMinutesChange(preset) }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (preset < 60) "${preset}m" else "1h",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = fg
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun formatCacheTimeoutLabel(minutes: Int): String = when {
+    minutes < 60 -> if (minutes == 1) "1 minute" else "$minutes minutes"
+    minutes == 60 -> "1 hour"
+    else -> "$minutes minutes"
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Elegant font-size picker

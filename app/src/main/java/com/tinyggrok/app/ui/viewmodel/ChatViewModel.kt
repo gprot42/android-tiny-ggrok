@@ -116,6 +116,13 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.locationEnabled.collect { enabled ->
                 _uiState.value = _uiState.value.copy(locationEnabled = enabled)
+                // MainActivity already warms GPS on app start; re-trigger here when the
+                // user toggles the setting (or grants permission) without leaving chat.
+                if (enabled) {
+                    locationRepository.startGpsWarmup()
+                } else {
+                    locationRepository.stopGpsWarmup()
+                }
             }
         }
     }

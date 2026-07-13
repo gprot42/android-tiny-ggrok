@@ -111,9 +111,14 @@ class ChatRepository @Inject constructor(
                     append(" ")
                     append(locationContext)
                     append(
-                        " Use this location as the journey origin when the user says \"here\", " +
-                            "\"current location\", or \"near me\": resolve nearest stations/stops, " +
-                            "then National Rail / TfL search from those origins."
+                        " LOCATION RULES: The numeric GPS coordinates are the source of truth. " +
+                            "When the user says \"here\", \"current location\", or \"near me\", " +
+                            "resolve nearest stations/stops/places from those coordinates " +
+                            "(and UK postcode if given), then search National Rail / TfL from those origins. " +
+                            "Do NOT treat a reverse-geocoded town or district name as definitive if it " +
+                            "conflicts with the coordinates — UK geocoders often name a neighbouring " +
+                            "town or district HQ (e.g. wrong Essex district). " +
+                            "If accuracy is marked coarse, only use coordinates, never invent a town."
                     )
                 }
             }

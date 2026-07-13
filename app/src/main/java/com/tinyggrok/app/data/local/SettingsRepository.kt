@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.tinyggrok.app.AppDefaults
@@ -40,6 +41,12 @@ class SettingsRepository @Inject constructor(
     private val VOICE_PERMANENT_LISTEN_KEY = booleanPreferencesKey("voice_permanent_listen")
     /** When true (default), chat may attach approximate GPS location to prompts if permitted. */
     private val LOCATION_ENABLED_KEY = booleanPreferencesKey("location_enabled")
+    /**
+     * How long a GPS fix stays valid without a new chip lookup (minutes).
+     * Default [DEFAULT_LOCATION_CACHE_TIMEOUT_MINUTES].
+     */
+    private val LOCATION_CACHE_TIMEOUT_MINUTES_KEY =
+        intPreferencesKey("location_cache_timeout_minutes")
 
     val apiKey: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[API_KEY_KEY] }
@@ -98,6 +105,18 @@ class SettingsRepository @Inject constructor(
     /** GPS / approximate location for chat context. Default on; user can disable. */
     val locationEnabled: Flow<Boolean> = context.dataStore.data
         .map { preferences -> preferences[LOCATION_ENABLED_KEY] ?: true }
+
+    /**
+     * GPS cache TTL in minutes. Within this window we reuse the last fix (no GPS chip).
+     * Default 10; clamped to [MIN_LOCATION_CACHE_TIMEOUT_MINUTES]–
+     * [MAX_LOCATION_CACHE_TIMEOUT_MINUTES].
+     */
+    val locationCacheTimeoutMinutes: Flow<Int> = context.dataStore.data
+        .map { preferences ->
+            normalizeLocationCacheTimeoutMinutes(
+                preferences[LOCATION_CACHE_TIMEOUT_MINUTES_KEY]
+            )
+        }
 
     suspend fun saveApiKey(key: String) {
         context.dataStore.edit { preferences ->
@@ -201,8 +220,29 @@ class SettingsRepository @Inject constructor(
         }
     }
 
+    suspend fun saveLocationCacheTimeoutMinutes(minutes: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[LOCATION_CACHE_TIMEOUT_MINUTES_KEY] =
+                normalizeLocationCacheTimeoutMinutes(minutes)
+        }
+    }
+
     fun logDebug(tag: String, message: String) {
         // Always log to Android logcat; UI visibility is controlled separately
         Log.d(tag, message)
+    }
+
+    companion object {
+        const val DEFAULT_LOCATION_CACHE_TIMEOUT_MINUTES = 10
+        const val MIN_LOCATION_CACHE_TIMEOUT_MINUTES = 1
+        const val MAX_LOCATION_CACHE_TIMEOUT_MINUTES = 60
+
+        fun normalizeLocationCacheTimeoutMinutes(minutes: Int?): Int {
+            val m = minutes ?: DEFAULT_LOCATION_CACHE_TIMEOUT_MINUTES
+            return m.coerceIn(
+                MIN_LOCATION_CACHE_TIMEOUT_MINUTES,
+                MAX_LOCATION_CACHE_TIMEOUT_MINUTES
+            )
+        }
     }
 }

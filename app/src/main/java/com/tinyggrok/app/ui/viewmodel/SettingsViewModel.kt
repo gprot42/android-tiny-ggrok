@@ -35,6 +35,12 @@ data class SettingsUiState(
     val voiceEnabled: Boolean = true,
     /** GPS / approximate location for chat (default on). */
     val locationEnabled: Boolean = true,
+    /**
+     * How long a GPS fix is reused before a new lookup (minutes). Default 10.
+     * @see SettingsRepository.DEFAULT_LOCATION_CACHE_TIMEOUT_MINUTES
+     */
+    val locationCacheTimeoutMinutes: Int =
+        SettingsRepository.DEFAULT_LOCATION_CACHE_TIMEOUT_MINUTES,
     val voiceOption: VoiceOption = VoiceOption.EVE,
     val personalityMode: PersonalityMode = PersonalityMode.ASSISTANT,
     val savedMessage: String? = null,
@@ -103,6 +109,11 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.locationEnabled.collect { enabled ->
                 _uiState.value = _uiState.value.copy(locationEnabled = enabled)
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.locationCacheTimeoutMinutes.collect { minutes ->
+                _uiState.value = _uiState.value.copy(locationCacheTimeoutMinutes = minutes)
             }
         }
         viewModelScope.launch {
@@ -302,6 +313,18 @@ class SettingsViewModel @Inject constructor(
     fun updateLocationEnabled(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(locationEnabled = enabled, savedMessage = null)
         viewModelScope.launch { settingsRepository.saveLocationEnabled(enabled) }
+    }
+
+    fun updateLocationCacheTimeoutMinutes(minutes: Int) {
+        val normalized =
+            SettingsRepository.normalizeLocationCacheTimeoutMinutes(minutes)
+        _uiState.value = _uiState.value.copy(
+            locationCacheTimeoutMinutes = normalized,
+            savedMessage = null
+        )
+        viewModelScope.launch {
+            settingsRepository.saveLocationCacheTimeoutMinutes(normalized)
+        }
     }
 
     fun updateVoiceOption(option: VoiceOption) {

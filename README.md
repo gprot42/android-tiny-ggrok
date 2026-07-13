@@ -34,6 +34,8 @@ Location is **for journey-style questions that start from “here”**, not for 
 
 With **Use GPS location** enabled (default) and Android location permission granted, the app adds an approximate position to the model instructions. Combined with the sources below, Grok can resolve nearby stations/stops and search live times. Disable the setting (or deny permission) anytime — chat still works; you just name the origin yourself.
 
+**Accuracy notes:** location uses **platform GPS only** for place naming (no Google Play Services). Strategy is **cache with timeout** (not continuous tracking): optional one-shot warm lookup at app open, then reuse for the configured TTL (**Settings → GPS cache timeout**, default **10 minutes**) without touching the GPS chip; after TTL expires the next send does one fresh session and stops again. A town/postcode is reverse-geocoded only from a GPS fix ≤50 m.
+
 ### Why live answers use National Rail (and why they sometimes didn’t)
 
 The app does **not** call National Rail’s APIs directly. It uses xAI’s server-side **`web_search`** tool: the model chooses search queries, xAI runs them, and citations come back.
