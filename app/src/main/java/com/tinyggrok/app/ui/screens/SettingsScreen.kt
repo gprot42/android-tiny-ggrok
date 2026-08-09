@@ -27,15 +27,21 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.BugReport
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VpnKey
@@ -43,6 +49,7 @@ import com.tinyggrok.app.AppDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -73,6 +80,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -83,7 +91,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.tinyggrok.app.data.local.SettingsRepository
+import com.tinyggrok.app.data.repository.AuthMode
 import com.tinyggrok.app.ui.theme.AppTheme
+import com.tinyggrok.app.ui.viewmodel.ApiKeyCheckUi
 import com.tinyggrok.app.ui.viewmodel.SettingsViewModel
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -93,6 +103,7 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToAbout: () -> Unit,
+    onNavigateToUsage: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -458,9 +469,225 @@ fun SettingsScreen(
                 }
             }
 
-            // ── API Key ──────────────────────────────────────────────────────
-            SettingsSection(title = "API Key", icon = Icons.Default.VpnKey) {
+            // ── Auth (API key / SuperGrok OAuth experimental) ────────────────
+            SettingsSection(title = "Authentication", icon = Icons.Default.VpnKey) {
                 val showKey = remember { mutableStateOf(false) }
+                val checkingKey = uiState.apiKeyCheck is ApiKeyCheckUi.Checking
+                val uriHandler = LocalUriHandler.current
+
+                Text(
+                    text = "Choose how Tiny Grok authenticates to api.x.ai. " +
+                        "SuperGrok OAuth is experimental — it may use subscription quota " +
+                        "or still hit API prepaid limits depending on xAI.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+
+                SectionLabel("Mode")
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    listOf(
+                        "API key" to AuthMode.API_KEY,
+                        "SuperGrok" to AuthMode.SUPERGROK_OAUTH
+                    ).forEachIndexed { index, (label, mode) ->
+                        SegmentedButton(
+                            selected = uiState.authMode == mode,
+                            onClick = { viewModel.updateAuthMode(mode) },
+                            shape = SegmentedButtonDefaults.itemShape(index = index, count = 2),
+                            enabled = !uiState.oauthLoginInProgress
+                        ) { Text(label, maxLines = 1) }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+
+                // SuperGrok OAuth block
+                Text(
+                    "SuperGrok sign-in (experimental)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Device-code login via auth.x.ai (same OIDC family as Grok Build). " +
+                        "Not an official Tiny Grok entitlement — no Heavy guarantee.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+
+                if (uiState.oauthSignedIn) {
+                    Text(
+                        text = "Signed in" +
+                            (uiState.oauthEmail?.let { " · $it" } ?: ""),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = viewModel::signOutSuperGrok,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                Icons.Default.Logout,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("Sign out")
+                        }
+                        if (uiState.authMode == AuthMode.SUPERGROK_OAUTH) {
+                            OutlinedButton(
+                                onClick = viewModel::checkApiKey,
+                                modifier = Modifier.weight(1f),
+                                enabled = !checkingKey
+                            ) {
+                                if (checkingKey) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.VerifiedUser,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (checkingKey) "Checking…" else "Check")
+                            }
+                        }
+                    }
+                } else if (uiState.oauthLoginInProgress) {
+                    val verifyUri = uiState.oauthVerificationUri
+                    // Open verification page once when the device code arrives.
+                    LaunchedEffect(verifyUri) {
+                        if (!verifyUri.isNullOrBlank()) {
+                            runCatching { uriHandler.openUri(verifyUri) }
+                        }
+                    }
+                    uiState.oauthUserCode?.let { code ->
+                        Text(
+                            text = code,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 2.sp
+                        )
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    uiState.oauthLoginMessage?.let { msg ->
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                if (!verifyUri.isNullOrBlank()) {
+                                    runCatching { uriHandler.openUri(verifyUri) }
+                                        .onFailure {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse(verifyUri))
+                                            )
+                                        }
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !verifyUri.isNullOrBlank()
+                        ) {
+                            Icon(
+                                Icons.Default.OpenInBrowser,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("Open browser")
+                        }
+                        OutlinedButton(
+                            onClick = viewModel::cancelSuperGrokLogin,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Cancel")
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = viewModel::startSuperGrokLogin,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            Icons.Default.Login,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Sign in with SuperGrok")
+                    }
+                    uiState.oauthLoginMessage?.let { msg ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
+                // API key check result also shown for SuperGrok check
+                if (uiState.authMode == AuthMode.SUPERGROK_OAUTH) {
+                    when (val check = uiState.apiKeyCheck) {
+                        is ApiKeyCheckUi.Success -> {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = check.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        is ApiKeyCheckUi.Failure -> {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = check.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        else -> Unit
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    "xAI API key",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Used when mode is API key. Create keys at console.x.ai (prepaid credits).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
 
                 OutlinedTextField(
                     value = uiState.apiKey,
@@ -468,6 +695,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("xAI API key") },
                     singleLine = true,
+                    enabled = !checkingKey,
                     leadingIcon = {
                         Icon(
                             Icons.Default.VpnKey,
@@ -498,7 +726,8 @@ fun SettingsScreen(
                 ) {
                     Button(
                         onClick = viewModel::saveApiKey,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        enabled = !checkingKey
                     ) {
                         Icon(
                             Icons.Default.Check,
@@ -509,8 +738,29 @@ fun SettingsScreen(
                         Text("Save")
                     }
                     OutlinedButton(
+                        onClick = viewModel::checkApiKey,
+                        modifier = Modifier.weight(1f),
+                        enabled = !checkingKey && uiState.apiKey.isNotBlank()
+                    ) {
+                        if (checkingKey) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.VerifiedUser,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (checkingKey) "Checking…" else "Check")
+                    }
+                    OutlinedButton(
                         onClick = viewModel::clearApiKey,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        enabled = !checkingKey
                     ) {
                         Icon(
                             Icons.Default.Delete,
@@ -520,6 +770,27 @@ fun SettingsScreen(
                         Spacer(Modifier.width(6.dp))
                         Text("Clear")
                     }
+                }
+
+                when (val check = uiState.apiKeyCheck) {
+                    is ApiKeyCheckUi.Success -> {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = check.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    is ApiKeyCheckUi.Failure -> {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = check.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    else -> Unit
                 }
 
                 uiState.savedMessage?.let { msg ->
@@ -532,7 +803,95 @@ fun SettingsScreen(
                 }
             }
 
-            // ── About button ─────────────────────────────────────────────────
+            // ── Management key (credits / usage) ─────────────────────────────
+            SettingsSection(title = "API credits / Management", icon = Icons.Default.AttachMoney) {
+                Text(
+                    "Optional. Used only by Credits & usage to load prepaid balance and rate quotas. " +
+                        "Create a key at console.x.ai → Settings → Management Keys " +
+                        "(not the same as your chat API key).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+
+                val showMgmtKey = remember { mutableStateOf(false) }
+                OutlinedTextField(
+                    value = uiState.managementKey,
+                    onValueChange = viewModel::updateManagementKey,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Management key") },
+                    singleLine = true,
+                    visualTransformation = if (showMgmtKey.value)
+                        VisualTransformation.None
+                    else
+                        PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showMgmtKey.value = !showMgmtKey.value }) {
+                            Icon(
+                                imageVector = if (showMgmtKey.value) Icons.Default.VisibilityOff
+                                else Icons.Default.Visibility,
+                                contentDescription = if (showMgmtKey.value) "Hide key" else "Show key"
+                            )
+                        }
+                    }
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = uiState.teamId,
+                    onValueChange = viewModel::updateTeamId,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Team ID (optional)") },
+                    singleLine = true,
+                    supportingText = {
+                        Text("Leave blank to auto-detect from the management key.")
+                    }
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = viewModel::saveManagementCredentials,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Save")
+                    }
+                    OutlinedButton(
+                        onClick = viewModel::clearManagementCredentials,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Clear")
+                    }
+                }
+            }
+
+            // ── Credits & About ──────────────────────────────────────────────
+            OutlinedButton(
+                onClick = onNavigateToUsage,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    Icons.Default.AttachMoney,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Credits & usage")
+            }
+
             OutlinedButton(
                 onClick = onNavigateToAbout,
                 modifier = Modifier.fillMaxWidth()

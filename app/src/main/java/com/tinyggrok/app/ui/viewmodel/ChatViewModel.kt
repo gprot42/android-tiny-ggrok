@@ -14,7 +14,9 @@ import com.tinyggrok.app.data.model.Message
 import com.tinyggrok.app.data.model.TextContent
 import com.tinyggrok.app.data.repository.ChatRepository
 import com.tinyggrok.app.data.repository.DebugLogRepository
+import com.tinyggrok.app.data.repository.ResolvedAuth
 import com.tinyggrok.app.data.repository.ResponseHistoryRepository
+import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,22 +32,32 @@ private const val MAX_IMAGE_DIMENSION = 1024
 /** JPEG quality for base64 encoding */
 private const val JPEG_QUALITY = 85
 
+/** Max images the user can attach to a single prompt (API / payload safety). */
+const val MAX_ATTACHED_IMAGES = 10
+
 /** Per-1M-token prices (input, output) for known chat models. */
 private fun costRatesPerMillion(model: String): Pair<Double, Double> = when (model) {
     AppDefaults.MODEL_GROK_4_5 -> 2.00 to 6.00
     else -> 1.25 to 2.50 // grok-4.3 default
 }
 
+data class AttachedImage(
+    val uri: Uri,
+    val base64: String
+)
+
 data class ChatUiMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
     val role: String,
     val content: String,
     val costInfo: CostInfo? = null,
-    val hasImage: Boolean = false,
+    val imageCount: Int = 0,
     val model: String? = null,
     val usedWebSearch: Boolean = false,
     val citations: List<String> = emptyList()
-)
+) {
+    val hasImage: Boolean get() = imageCount > 0
+}
 
 data class CostInfo(
     val promptTokens: Int,
@@ -61,8 +73,7 @@ data class CostInfo(
 data class ChatUiState(
     val messages: List<ChatUiMessage> = emptyList(),
     val prompt: String = "",
-    val attachedImageUri: Uri? = null,
-    val attachedImageBase64: String? = null,
+    val attachedImages: List<AttachedImage> = emptyList(),
     val isSending: Boolean = false,
     val errorMessage: String? = null,
     val showCost: Boolean = false,
@@ -73,12 +84,15 @@ data class ChatUiState(
     val lastSentPrompt: String = "",
     /** When true, chat attaches approximate GPS (if OS permission granted). */
     val locationEnabled: Boolean = true
-)
+) {
+    val hasAttachedImages: Boolean get() = attachedImages.isNotEmpty()
+}
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val settingsRepository: SettingsRepository,
+    private val superGrokAuthRepository: SuperGrokAuthRepository,
     private val locationRepository: LocationRepository,
     private val debugLogRepository: DebugLogRepository,
     private val responseHistoryRepository: ResponseHistoryRepository,
@@ -131,62 +145,111 @@ class ChatViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(prompt = prompt, errorMessage = null)
     }
 
-    fun attachImage(uri: Uri) {
+    fun attachImages(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
-            try {
-                val base64 = uriToBase64(uri)
+            val current = _uiState.value.attachedImages
+            val remaining = MAX_ATTACHED_IMAGES - current.size
+            if (remaining <= 0) {
                 _uiState.value = _uiState.value.copy(
-                    attachedImageUri = uri,
-                    attachedImageBase64 = base64,
-                    errorMessage = null
+                    errorMessage = "You can attach up to $MAX_ATTACHED_IMAGES images."
                 )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    errorMessage = "Failed to load image: ${e.message}"
-                )
+                return@launch
             }
+
+            val existingUris = current.map { it.uri }.toSet()
+            val candidates = uris.filterNot { it in existingUris }
+            if (candidates.isEmpty()) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "Those images are already attached."
+                )
+                return@launch
+            }
+
+            val hitLimit = candidates.size > remaining
+            val toAdd = candidates.take(remaining)
+            val loaded = mutableListOf<AttachedImage>()
+            var lastError: String? = null
+            for (uri in toAdd) {
+                try {
+                    loaded += AttachedImage(uri = uri, base64 = uriToBase64(uri))
+                } catch (e: Exception) {
+                    lastError = e.message
+                }
+            }
+
+            val errorMessage = when {
+                loaded.isEmpty() ->
+                    "Failed to load image: ${lastError ?: "unknown error"}"
+                lastError != null && hitLimit ->
+                    "Some images failed to load: $lastError (max $MAX_ATTACHED_IMAGES images)"
+                lastError != null ->
+                    "Some images failed to load: $lastError"
+                hitLimit ->
+                    "Attached ${loaded.size} image(s) (max $MAX_ATTACHED_IMAGES images)."
+                else -> null
+            }
+
+            _uiState.value = _uiState.value.copy(
+                attachedImages = if (loaded.isEmpty()) current else current + loaded,
+                errorMessage = errorMessage
+            )
         }
     }
 
-    fun removeImage() {
+    /** Convenience for single-image callers (e.g. share intents). */
+    fun attachImage(uri: Uri) = attachImages(listOf(uri))
+
+    fun removeImage(uri: Uri) {
         _uiState.value = _uiState.value.copy(
-            attachedImageUri = null,
-            attachedImageBase64 = null
+            attachedImages = _uiState.value.attachedImages.filterNot { it.uri == uri },
+            errorMessage = null
+        )
+    }
+
+    fun clearAttachedImages() {
+        _uiState.value = _uiState.value.copy(
+            attachedImages = emptyList(),
+            errorMessage = null
         )
     }
 
     fun sendPrompt() {
         val prompt = _uiState.value.prompt.trim()
-        val imageBase64 = _uiState.value.attachedImageBase64
+        val imageBase64List = _uiState.value.attachedImages.map { it.base64 }
 
-        if ((prompt.isEmpty() && imageBase64 == null) || _uiState.value.isSending) {
+        if ((prompt.isEmpty() && imageBase64List.isEmpty()) || _uiState.value.isSending) {
             return
         }
 
         viewModelScope.launch {
-            val apiKey = settingsRepository.apiKey.first().orEmpty()
-            if (apiKey.isBlank()) {
-                _uiState.value = _uiState.value.copy(
-                    errorMessage = "Add your xAI API key in Settings first."
-                )
-                return@launch
+            val auth = superGrokAuthRepository.resolveAuth()
+            val apiKey = when (auth) {
+                is ResolvedAuth.Ok -> auth.bearerToken
+                is ResolvedAuth.Missing -> {
+                    _uiState.value = _uiState.value.copy(errorMessage = auth.message)
+                    return@launch
+                }
             }
 
             val debugMode = settingsRepository.debugMode.first()
             val chatModel = settingsRepository.chatModel.first()
             val previousMessages = _uiState.value.messages
-            val displayText = prompt.ifEmpty { "[Image]" }
+            val displayText = when {
+                prompt.isNotEmpty() -> prompt
+                imageBase64List.size == 1 -> "[Image]"
+                else -> "[${imageBase64List.size} images]"
+            }
             val optimisticMessages = previousMessages + ChatUiMessage(
                 role = "user",
                 content = displayText,
-                hasImage = imageBase64 != null
+                imageCount = imageBase64List.size
             )
 
             _uiState.value = _uiState.value.copy(
                 messages = optimisticMessages,
                 prompt = "",
-                attachedImageUri = null,
-                attachedImageBase64 = null,
+                attachedImages = emptyList(),
                 isSending = true,
                 errorMessage = null,
                 lastSentPrompt = prompt
@@ -216,7 +279,7 @@ class ChatViewModel @Inject constructor(
             val result = chatRepository.sendMessage(
                 apiKey = apiKey,
                 text = prompt,
-                imageBase64 = imageBase64,
+                imageBase64List = imageBase64List,
                 history = history,
                 debugMode = debugMode,
                 responseFormat = _uiState.value.responseFormat,
@@ -276,8 +339,7 @@ class ChatViewModel @Inject constructor(
     fun clearPrompt() {
         _uiState.value = _uiState.value.copy(
             prompt = "",
-            attachedImageUri = null,
-            attachedImageBase64 = null,
+            attachedImages = emptyList(),
             errorMessage = null
         )
     }

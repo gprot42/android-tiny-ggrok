@@ -43,9 +43,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Share
@@ -95,8 +97,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.tinyggrok.app.ui.viewmodel.AttachedImage
 import com.tinyggrok.app.ui.viewmodel.ChatUiMessage
 import com.tinyggrok.app.ui.viewmodel.ChatViewModel
+import com.tinyggrok.app.ui.viewmodel.MAX_ATTACHED_IMAGES
 import kotlin.math.ceil
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -112,6 +116,7 @@ fun ChatScreen(
     onNavigateToDebugLogs: () -> Unit = {},
     onNavigateToHistory: () -> Unit = {},
     onNavigateToVoiceTranslator: () -> Unit = {},
+    onNavigateToUsage: () -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -146,9 +151,11 @@ fun ChatScreen(
     }
 
     val imagePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let { viewModel.attachImage(it) }
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            viewModel.attachImages(uris)
+        }
     }
 
     // Ask for location once when GPS is on and the user sends (then send either way).
@@ -260,6 +267,9 @@ fun ChatScreen(
                     }
                     TextButton(onClick = onNavigateToVoiceTranslator) {
                         Text("Voice")
+                    }
+                    TextButton(onClick = onNavigateToUsage) {
+                        Text("Credits")
                     }
                     if (uiState.debugMode) {
                         TextButton(onClick = onNavigateToDebugLogs) {
@@ -387,31 +397,12 @@ fun ChatScreen(
                 )
             }
 
-            // Image attachment preview
-            uiState.attachedImageUri?.let { uri ->
-                Card(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Box {
-                        AsyncImage(
-                            model = uri,
-                            contentDescription = "Attached image",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(120.dp),
-                            contentScale = ContentScale.Crop
-                        )
-                        IconButton(
-                            onClick = viewModel::removeImage,
-                            modifier = Modifier.align(Alignment.TopEnd)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Remove image"
-                            )
-                        }
-                    }
-                }
+            // Multi-image attachment previews
+            if (uiState.attachedImages.isNotEmpty()) {
+                AttachedImagesRow(
+                    images = uiState.attachedImages,
+                    onRemove = viewModel::removeImage
+                )
             }
 
             // Prompt stays editable while a reply is in flight so the user can draft
@@ -427,10 +418,13 @@ fun ChatScreen(
                 maxLines = 4,
                 enabled = true,
                 trailingIcon = {
-                    IconButton(onClick = { imagePicker.launch("image/*") }) {
+                    IconButton(
+                        onClick = { imagePicker.launch("image/*") },
+                        enabled = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
+                    ) {
                         Icon(
                             imageVector = Icons.Outlined.Image,
-                            contentDescription = "Attach image"
+                            contentDescription = "Attach images"
                         )
                     }
                 }
@@ -472,17 +466,63 @@ fun ChatScreen(
                     }
                     TextButton(
                         onClick = viewModel::clearPrompt,
-                        enabled = uiState.prompt.isNotEmpty() || uiState.attachedImageBase64 != null
+                        enabled = uiState.prompt.isNotEmpty() || uiState.hasAttachedImages
                     ) {
                         Text("Clear")
                     }
                     Button(
                         onClick = { sendWithOptionalLocationPermission() },
                         modifier = Modifier.padding(start = 8.dp),
-                        enabled = (uiState.prompt.isNotBlank() || uiState.attachedImageBase64 != null) &&
+                        enabled = (uiState.prompt.isNotBlank() || uiState.hasAttachedImages) &&
                             !uiState.isSending
                     ) {
                         Text(if (uiState.isSending) "Sending..." else "Send")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachedImagesRow(
+    images: List<AttachedImage>,
+    onRemove: (Uri) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = if (images.size == 1) "1 image attached" else "${images.size} images attached",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            items(images, key = { it.uri.toString() }) { image ->
+                Card(shape = RoundedCornerShape(8.dp)) {
+                    Box {
+                        AsyncImage(
+                            model = image.uri,
+                            contentDescription = "Attached image",
+                            modifier = Modifier
+                                .size(96.dp)
+                                .padding(0.dp),
+                            contentScale = ContentScale.Crop
+                        )
+                        IconButton(
+                            onClick = { onRemove(image.uri) },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Remove image",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -639,12 +679,26 @@ private fun MessageItem(
             }
         }
         if (message.hasImage && !isAssistant) {
-            Icon(
-                imageVector = Icons.Outlined.Image,
-                contentDescription = "Image attached",
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Outlined.Image,
+                    contentDescription = if (message.imageCount == 1) {
+                        "Image attached"
+                    } else {
+                        "${message.imageCount} images attached"
+                    },
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                if (message.imageCount > 1) {
+                    Text(
+                        text = "×${message.imageCount}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 2.dp)
+                    )
+                }
+            }
         }
         if (isAssistant) {
             val htmlContent = if (responseFormat == "markdown") {

@@ -8,10 +8,16 @@ import com.tinyggrok.app.AppDefaults
 import com.tinyggrok.app.data.local.SettingsRepository
 import com.tinyggrok.app.data.model.PersonalityMode
 import com.tinyggrok.app.data.model.VoiceOption
+import com.tinyggrok.app.data.repository.ApiKeyCheckResult
+import com.tinyggrok.app.data.repository.AuthMode
+import com.tinyggrok.app.data.repository.ChatRepository
+import com.tinyggrok.app.data.repository.ResolvedAuth
+import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
 import com.tinyggrok.app.ui.theme.AppTheme
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -24,8 +30,29 @@ import org.json.JSONObject
 import java.io.File
 import javax.inject.Inject
 
+/** UI status for the Settings "Check key" action. */
+sealed class ApiKeyCheckUi {
+    data object Idle : ApiKeyCheckUi()
+    data object Checking : ApiKeyCheckUi()
+    data class Success(val message: String) : ApiKeyCheckUi()
+    data class Failure(val message: String) : ApiKeyCheckUi()
+}
+
 data class SettingsUiState(
     val apiKey: String = "",
+    /** Chat credential mode: API key (default) or SuperGrok OAuth (experimental). */
+    val authMode: AuthMode = AuthMode.API_KEY,
+    val oauthSignedIn: Boolean = false,
+    val oauthEmail: String? = null,
+    /** Device-code login in progress. */
+    val oauthLoginInProgress: Boolean = false,
+    val oauthUserCode: String? = null,
+    val oauthVerificationUri: String? = null,
+    val oauthLoginMessage: String? = null,
+    /** Management key for live credits/usage (management-api.x.ai). */
+    val managementKey: String = "",
+    /** Optional team UUID for billing endpoints. */
+    val teamId: String = "",
     val theme: AppTheme = AppTheme.DARK,
     val showCost: Boolean = false,
     val debugMode: Boolean = false,
@@ -50,12 +77,15 @@ data class SettingsUiState(
     val previewingPersonality: PersonalityMode? = null,
     val previewError: String? = null,
     /** VAD (voice activity detection) threshold 0.1–0.9; higher = less sensitive */
-    val vadThreshold: Float = 0.5f
+    val vadThreshold: Float = 0.5f,
+    val apiKeyCheck: ApiKeyCheckUi = ApiKeyCheckUi.Idle
 )
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
+    private val chatRepository: ChatRepository,
+    private val superGrokAuthRepository: SuperGrokAuthRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -64,11 +94,37 @@ class SettingsViewModel @Inject constructor(
 
     private val ttsClient = OkHttpClient()
     private var mediaPlayer: MediaPlayer? = null
+    private var oauthLoginJob: Job? = null
 
     init {
         viewModelScope.launch {
             settingsRepository.apiKey.collect { apiKey ->
                 _uiState.value = _uiState.value.copy(apiKey = apiKey.orEmpty())
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.authMode.collect { mode ->
+                _uiState.value = _uiState.value.copy(authMode = AuthMode.fromStorage(mode))
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.oauthAccessToken.collect { token ->
+                _uiState.value = _uiState.value.copy(oauthSignedIn = !token.isNullOrBlank())
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.oauthEmail.collect { email ->
+                _uiState.value = _uiState.value.copy(oauthEmail = email)
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.managementKey.collect { key ->
+                _uiState.value = _uiState.value.copy(managementKey = key.orEmpty())
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.teamId.collect { id ->
+                _uiState.value = _uiState.value.copy(teamId = id.orEmpty())
             }
         }
         viewModelScope.launch {
@@ -162,11 +218,6 @@ class SettingsViewModel @Inject constructor(
     )
 
     fun previewVoice(voice: VoiceOption) {
-        val apiKey = _uiState.value.apiKey.trim()
-        if (apiKey.isEmpty()) {
-            _uiState.value = _uiState.value.copy(previewError = "Save your API key first.")
-            return
-        }
         val text = voiceSamplePhrases[voice] ?: "Hello! This is ${voice.displayName}."
         _uiState.value = _uiState.value.copy(previewingVoice = voice, previewError = null)
         viewModelScope.launch {
@@ -179,11 +230,6 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun previewPersonality(mode: PersonalityMode) {
-        val apiKey = _uiState.value.apiKey.trim()
-        if (apiKey.isEmpty()) {
-            _uiState.value = _uiState.value.copy(previewError = "Save your API key first.")
-            return
-        }
         val text = personalitySamplePhrases[mode] ?: mode.description
         val voiceId = _uiState.value.voiceOption.name.lowercase()
         _uiState.value = _uiState.value.copy(previewingPersonality = mode, previewError = null)
@@ -206,7 +252,14 @@ class SettingsViewModel @Inject constructor(
     ) = withContext(Dispatchers.IO) {
         try {
             stopPreview()
-            val apiKey = _uiState.value.apiKey.trim()
+            val auth = superGrokAuthRepository.resolveAuth()
+            val bearer = when (auth) {
+                is ResolvedAuth.Ok -> auth.bearerToken
+                is ResolvedAuth.Missing -> {
+                    withContext(Dispatchers.Main) { onError(auth.message) }
+                    return@withContext
+                }
+            }
             val body = JSONObject().apply {
                 put("text", text)
                 put("voice_id", voiceId)
@@ -216,7 +269,7 @@ class SettingsViewModel @Inject constructor(
 
             val request = Request.Builder()
                 .url("https://api.x.ai/v1/tts")
-                .header("Authorization", "Bearer $apiKey")
+                .header("Authorization", "Bearer $bearer")
                 .post(body)
                 .build()
 
@@ -270,8 +323,178 @@ class SettingsViewModel @Inject constructor(
 
     // ── Settings mutations ────────────────────────────────────────────────────
 
+    fun updateAuthMode(mode: AuthMode) {
+        viewModelScope.launch {
+            if (mode == AuthMode.SUPERGROK_OAUTH && !_uiState.value.oauthSignedIn) {
+                // Switch mode only after a successful sign-in; start login UX instead.
+                _uiState.value = _uiState.value.copy(
+                    authMode = mode,
+                    savedMessage = null,
+                    oauthLoginMessage = "Sign in below to use SuperGrok OAuth."
+                )
+            }
+            superGrokAuthRepository.setMode(mode)
+            _uiState.value = _uiState.value.copy(authMode = mode, savedMessage = null)
+        }
+    }
+
+    fun startSuperGrokLogin() {
+        if (_uiState.value.oauthLoginInProgress) return
+        oauthLoginJob?.cancel()
+        oauthLoginJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                oauthLoginInProgress = true,
+                oauthLoginMessage = "Requesting device code…",
+                oauthUserCode = null,
+                oauthVerificationUri = null,
+                savedMessage = null
+            )
+            try {
+                val device = withContext(Dispatchers.IO) {
+                    superGrokAuthRepository.startDeviceLogin()
+                }
+                val openUri = device.verificationUriComplete ?: device.verificationUri
+                _uiState.value = _uiState.value.copy(
+                    oauthUserCode = device.userCode,
+                    oauthVerificationUri = openUri,
+                    oauthLoginMessage =
+                        "Open the link, approve access, then wait — code ${device.userCode}"
+                )
+                val result = superGrokAuthRepository.completeDeviceLogin(
+                    deviceCode = device.deviceCode,
+                    intervalSeconds = device.intervalSeconds
+                )
+                result.fold(
+                    onSuccess = {
+                        _uiState.value = _uiState.value.copy(
+                            oauthLoginInProgress = false,
+                            oauthUserCode = null,
+                            oauthVerificationUri = null,
+                            oauthLoginMessage = null,
+                            authMode = AuthMode.SUPERGROK_OAUTH,
+                            oauthSignedIn = true,
+                            savedMessage = "Signed in with SuperGrok (experimental)."
+                        )
+                    },
+                    onFailure = { e ->
+                        _uiState.value = _uiState.value.copy(
+                            oauthLoginInProgress = false,
+                            oauthLoginMessage = e.message ?: "Sign-in failed"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    oauthLoginInProgress = false,
+                    oauthLoginMessage = e.message ?: "Sign-in failed"
+                )
+            }
+        }
+    }
+
+    fun cancelSuperGrokLogin() {
+        oauthLoginJob?.cancel()
+        oauthLoginJob = null
+        _uiState.value = _uiState.value.copy(
+            oauthLoginInProgress = false,
+            oauthUserCode = null,
+            oauthVerificationUri = null,
+            oauthLoginMessage = "Sign-in cancelled."
+        )
+    }
+
+    fun signOutSuperGrok() {
+        oauthLoginJob?.cancel()
+        viewModelScope.launch {
+            superGrokAuthRepository.signOut()
+            _uiState.value = _uiState.value.copy(
+                authMode = AuthMode.API_KEY,
+                oauthSignedIn = false,
+                oauthEmail = null,
+                oauthLoginInProgress = false,
+                oauthUserCode = null,
+                oauthVerificationUri = null,
+                oauthLoginMessage = null,
+                savedMessage = "Signed out of SuperGrok. Using API key mode."
+            )
+        }
+    }
+
     fun updateApiKey(apiKey: String) {
-        _uiState.value = _uiState.value.copy(apiKey = apiKey, savedMessage = null)
+        _uiState.value = _uiState.value.copy(
+            apiKey = apiKey,
+            savedMessage = null,
+            apiKeyCheck = ApiKeyCheckUi.Idle
+        )
+    }
+
+    /**
+     * Probe api.x.ai with the active credential:
+     * - SuperGrok mode → current OAuth access token
+     * - API key mode → key currently in the field (not necessarily saved)
+     */
+    fun checkApiKey() {
+        if (_uiState.value.apiKeyCheck is ApiKeyCheckUi.Checking) return
+        _uiState.value = _uiState.value.copy(apiKeyCheck = ApiKeyCheckUi.Checking, savedMessage = null)
+        viewModelScope.launch {
+            val bearer = when (_uiState.value.authMode) {
+                AuthMode.SUPERGROK_OAUTH -> {
+                    superGrokAuthRepository.getValidAccessToken()
+                        ?: run {
+                            _uiState.value = _uiState.value.copy(
+                                apiKeyCheck = ApiKeyCheckUi.Failure(
+                                    "Sign in with SuperGrok first."
+                                )
+                            )
+                            return@launch
+                        }
+                }
+                AuthMode.API_KEY -> {
+                    val key = _uiState.value.apiKey.trim()
+                    if (key.isEmpty()) {
+                        _uiState.value = _uiState.value.copy(
+                            apiKeyCheck = ApiKeyCheckUi.Failure("Enter an API key first.")
+                        )
+                        return@launch
+                    }
+                    key
+                }
+            }
+            when (val result = chatRepository.checkApiKey(bearer)) {
+                is ApiKeyCheckResult.Valid -> {
+                    val samples = result.sampleModels.joinToString(", ").ifBlank { "none listed" }
+                    val prefix = if (_uiState.value.authMode == AuthMode.SUPERGROK_OAUTH) {
+                        "SuperGrok OAuth accepted"
+                    } else {
+                        "API key valid"
+                    }
+                    val msg = if (result.modelCount > 0) {
+                        "$prefix · ${result.modelCount} models available ($samples)"
+                    } else {
+                        "$prefix · models list empty (credential accepted)"
+                    }
+                    _uiState.value = _uiState.value.copy(apiKeyCheck = ApiKeyCheckUi.Success(msg))
+                }
+                is ApiKeyCheckResult.Invalid -> {
+                    _uiState.value = _uiState.value.copy(
+                        apiKeyCheck = ApiKeyCheckUi.Failure(result.message)
+                    )
+                }
+                is ApiKeyCheckResult.NetworkError -> {
+                    _uiState.value = _uiState.value.copy(
+                        apiKeyCheck = ApiKeyCheckUi.Failure(result.message)
+                    )
+                }
+            }
+        }
+    }
+
+    fun updateManagementKey(key: String) {
+        _uiState.value = _uiState.value.copy(managementKey = key, savedMessage = null)
+    }
+
+    fun updateTeamId(teamId: String) {
+        _uiState.value = _uiState.value.copy(teamId = teamId, savedMessage = null)
     }
 
     fun updateTheme(theme: AppTheme) {
@@ -352,7 +575,36 @@ class SettingsViewModel @Inject constructor(
     fun clearApiKey() {
         viewModelScope.launch {
             settingsRepository.clearApiKey()
-            _uiState.value = _uiState.value.copy(apiKey = "", savedMessage = "API key cleared.")
+            _uiState.value = _uiState.value.copy(
+                apiKey = "",
+                savedMessage = "API key cleared.",
+                apiKeyCheck = ApiKeyCheckUi.Idle
+            )
+        }
+    }
+
+    fun saveManagementCredentials() {
+        viewModelScope.launch {
+            settingsRepository.saveManagementKey(_uiState.value.managementKey.trim())
+            val team = _uiState.value.teamId.trim()
+            if (team.isEmpty()) {
+                settingsRepository.clearTeamId()
+            } else {
+                settingsRepository.saveTeamId(team)
+            }
+            _uiState.value = _uiState.value.copy(savedMessage = "Management credentials saved.")
+        }
+    }
+
+    fun clearManagementCredentials() {
+        viewModelScope.launch {
+            settingsRepository.clearManagementKey()
+            settingsRepository.clearTeamId()
+            _uiState.value = _uiState.value.copy(
+                managementKey = "",
+                teamId = "",
+                savedMessage = "Management credentials cleared."
+            )
         }
     }
 }

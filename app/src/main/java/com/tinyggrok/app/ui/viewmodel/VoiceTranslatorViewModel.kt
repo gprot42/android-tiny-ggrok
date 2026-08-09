@@ -19,6 +19,8 @@ import com.tinyggrok.app.data.model.VoiceEvent
 import com.tinyggrok.app.data.model.VoiceSessionCost
 import com.tinyggrok.app.data.model.VoiceSessionState
 import com.tinyggrok.app.data.repository.RealtimeVoiceRepository
+import com.tinyggrok.app.data.repository.ResolvedAuth
+import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -64,6 +66,7 @@ data class VoiceTranslatorUiState(
 class VoiceTranslatorViewModel @Inject constructor(
     private val voiceRepository: RealtimeVoiceRepository,
     private val settingsRepository: SettingsRepository,
+    private val superGrokAuthRepository: SuperGrokAuthRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -134,13 +137,16 @@ class VoiceTranslatorViewModel @Inject constructor(
         voiceRepository.disconnect()
 
         viewModelScope.launch {
-            val apiKey = settingsRepository.apiKey.first().orEmpty()
-            if (apiKey.isBlank()) {
-                _uiState.value = _uiState.value.copy(
-                    errorMessage = "Add your xAI API key in Settings first.",
-                    sessionState = VoiceSessionState.ERROR
-                )
-                return@launch
+            val auth = superGrokAuthRepository.resolveAuth()
+            val apiKey = when (auth) {
+                is ResolvedAuth.Ok -> auth.bearerToken
+                is ResolvedAuth.Missing -> {
+                    _uiState.value = _uiState.value.copy(
+                        errorMessage = auth.message,
+                        sessionState = VoiceSessionState.ERROR
+                    )
+                    return@launch
+                }
             }
             val s = _uiState.value
             _uiState.value = s.copy(

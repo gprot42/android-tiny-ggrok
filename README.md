@@ -5,6 +5,7 @@ A lightweight native Android app for chatting with xAI's Grok models.
 ## Features
 
 - Secure API key entry and storage in Settings
+- **Credits & usage** screen (chat top bar **Credits**): live prepaid API balance, postpaid limits, model rate quotas via Management API; SuperGrok plan reference (consumer quotas are not exposed by API)
 - Three themes: Light, Dark, Tokyo Night
 - Chat models: **Grok 4.3** (default) or **Grok 4.5** — selectable in Settings
 - Uses xAI Agent Tools / Responses API (`https://api.x.ai/v1/responses`)
@@ -121,7 +122,18 @@ Devices and emulators on API 24 and above are supported. Location features need 
 
 - Android Studio or Gradle
 - Android SDK 24+ (device or emulator)
-- xAI API key (get from https://x.ai/)
+- xAI **API key** with prepaid **API credits** from [console.x.ai](https://console.x.ai/)
+
+### SuperGrok vs API credits (common confusion)
+
+**Tiny Grok is not the official Grok app.** It talks to `https://api.x.ai` with the API key you paste in Settings.
+
+| Product | Where | What it pays for |
+| --- | --- | --- |
+| **SuperGrok / SuperGrok Heavy** | grok.com / X apps | Consumer chat limits on those apps |
+| **xAI API credits** | [console.x.ai → Billing](https://console.x.ai/team/default/billing) | Every request this app makes (text, images, web search, voice, etc.) |
+
+A SuperGrok Heavy subscription **does not** fund this app. If you see “out of credits” after attaching photos, top up **API** credits (or enable auto top-up) on the console billing page. Image prompts cost more tokens than text-only ones, so a low balance often fails first when you attach photos.
 
 ## Building and Running
 
@@ -144,6 +156,16 @@ Note: If `./gradlew` is missing, the script falls back to `gradle` command. Run 
 3. In Settings screen, enter your xAI API key (it will be securely stored)
 4. Select theme
 5. Start chatting!
+
+### Credits & usage (optional)
+
+To show live **API prepaid balance** and rate quotas:
+
+1. In [console.x.ai](https://console.x.ai) → **Settings → Management Keys**, create a management key (separate from the chat API key).
+2. Paste it under **Settings → API credits / Management** (Team ID is optional; the app auto-detects it).
+3. Open **Credits** on the chat top bar (or **Credits & usage** in Settings) and tap **Refresh**.
+
+**SuperGrok Heavy** utilisation cannot be read programmatically — mark your consumer plan on that screen for reference, and check remaining consumer limits in the official Grok app / [grok.com](https://grok.com).
 
 ## Architecture
 Follows the plan in PLAN.md: Hilt DI, Retrofit for API, DataStore for settings, Compose for UI.

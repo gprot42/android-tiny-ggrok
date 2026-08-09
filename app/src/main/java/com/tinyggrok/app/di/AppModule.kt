@@ -1,6 +1,7 @@
 package com.tinyggrok.app.di
 
 import com.tinyggrok.app.data.api.XaiApiService
+import com.tinyggrok.app.data.api.XaiManagementApiService
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -40,5 +41,16 @@ object AppModule {
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(XaiApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideXaiManagementApiService(okHttpClient: OkHttpClient): XaiManagementApiService {
+        return Retrofit.Builder()
+            .baseUrl("https://management-api.x.ai/")
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(XaiManagementApiService::class.java)
     }
 }

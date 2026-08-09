@@ -25,6 +25,24 @@ class SettingsRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val API_KEY_KEY = stringPreferencesKey("api_key")
+    /** Management key for billing/credit queries (management-api.x.ai). */
+    private val MANAGEMENT_KEY_KEY = stringPreferencesKey("management_key")
+    /** Optional team UUID; if blank, resolved from management key validation. */
+    private val TEAM_ID_KEY = stringPreferencesKey("team_id")
+    /**
+     * User-selected consumer Grok plan label (display only).
+     * SuperGrok utilisation is not available via API.
+     */
+    private val CONSUMER_PLAN_KEY = stringPreferencesKey("consumer_plan")
+    /**
+     * Chat auth mode: API_KEY (default) or SUPERGROK_OAUTH (experimental).
+     * @see com.tinyggrok.app.data.repository.AuthMode
+     */
+    private val AUTH_MODE_KEY = stringPreferencesKey("auth_mode")
+    private val OAUTH_ACCESS_TOKEN_KEY = stringPreferencesKey("oauth_access_token")
+    private val OAUTH_REFRESH_TOKEN_KEY = stringPreferencesKey("oauth_refresh_token")
+    private val OAUTH_EXPIRES_AT_KEY = stringPreferencesKey("oauth_expires_at_epoch_ms")
+    private val OAUTH_EMAIL_KEY = stringPreferencesKey("oauth_email")
     private val THEME_KEY = stringPreferencesKey("theme")
     private val SHOW_COST_KEY = booleanPreferencesKey("show_cost")
     private val DEBUG_MODE_KEY = booleanPreferencesKey("debug_mode")
@@ -50,6 +68,33 @@ class SettingsRepository @Inject constructor(
 
     val apiKey: Flow<String?> = context.dataStore.data
         .map { preferences -> preferences[API_KEY_KEY] }
+
+    val authMode: Flow<String> = context.dataStore.data
+        .map { preferences -> preferences[AUTH_MODE_KEY] ?: "API_KEY" }
+
+    val oauthAccessToken: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[OAUTH_ACCESS_TOKEN_KEY] }
+
+    val oauthRefreshToken: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[OAUTH_REFRESH_TOKEN_KEY] }
+
+    val oauthExpiresAtEpochMs: Flow<Long?> = context.dataStore.data
+        .map { preferences -> preferences[OAUTH_EXPIRES_AT_KEY]?.toLongOrNull() }
+
+    val oauthEmail: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[OAUTH_EMAIL_KEY] }
+
+    val managementKey: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[MANAGEMENT_KEY_KEY] }
+
+    val teamId: Flow<String?> = context.dataStore.data
+        .map { preferences -> preferences[TEAM_ID_KEY] }
+
+    /** Display-only consumer plan: FREE, SUPERGROK_LITE, SUPERGROK, SUPERGROK_HEAVY. */
+    val consumerPlan: Flow<String> = context.dataStore.data
+        .map { preferences ->
+            normalizeConsumerPlan(preferences[CONSUMER_PLAN_KEY])
+        }
 
     val theme: Flow<AppTheme> = context.dataStore.data
         .map { preferences ->
@@ -127,6 +172,69 @@ class SettingsRepository @Inject constructor(
     suspend fun clearApiKey() {
         context.dataStore.edit { preferences ->
             preferences.remove(API_KEY_KEY)
+        }
+    }
+
+    suspend fun saveAuthMode(mode: String) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTH_MODE_KEY] = mode.trim().ifBlank { "API_KEY" }
+        }
+    }
+
+    suspend fun saveOAuthSession(
+        accessToken: String,
+        refreshToken: String,
+        expiresAtEpochMs: Long,
+        email: String?
+    ) {
+        context.dataStore.edit { preferences ->
+            preferences[OAUTH_ACCESS_TOKEN_KEY] = accessToken
+            if (refreshToken.isNotBlank()) {
+                preferences[OAUTH_REFRESH_TOKEN_KEY] = refreshToken
+            }
+            preferences[OAUTH_EXPIRES_AT_KEY] = expiresAtEpochMs.toString()
+            if (!email.isNullOrBlank()) {
+                preferences[OAUTH_EMAIL_KEY] = email
+            }
+        }
+    }
+
+    suspend fun clearOAuthSession() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(OAUTH_ACCESS_TOKEN_KEY)
+            preferences.remove(OAUTH_REFRESH_TOKEN_KEY)
+            preferences.remove(OAUTH_EXPIRES_AT_KEY)
+            preferences.remove(OAUTH_EMAIL_KEY)
+        }
+    }
+
+    suspend fun saveManagementKey(key: String) {
+        context.dataStore.edit { preferences ->
+            preferences[MANAGEMENT_KEY_KEY] = key
+        }
+    }
+
+    suspend fun clearManagementKey() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(MANAGEMENT_KEY_KEY)
+        }
+    }
+
+    suspend fun saveTeamId(teamId: String) {
+        context.dataStore.edit { preferences ->
+            preferences[TEAM_ID_KEY] = teamId.trim()
+        }
+    }
+
+    suspend fun clearTeamId() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(TEAM_ID_KEY)
+        }
+    }
+
+    suspend fun saveConsumerPlan(plan: String) {
+        context.dataStore.edit { preferences ->
+            preferences[CONSUMER_PLAN_KEY] = normalizeConsumerPlan(plan)
         }
     }
 
@@ -241,6 +349,28 @@ class SettingsRepository @Inject constructor(
         /** Built-in chips in Settings (minutes). Values outside this list are “custom”. */
         val LOCATION_CACHE_TIMEOUT_PRESETS_MINUTES: List<Int> =
             listOf(10, 15, 30, 60, 120)
+
+        const val CONSUMER_PLAN_FREE = "FREE"
+        const val CONSUMER_PLAN_SUPERGROK_LITE = "SUPERGROK_LITE"
+        const val CONSUMER_PLAN_SUPERGROK = "SUPERGROK"
+        const val CONSUMER_PLAN_SUPERGROK_HEAVY = "SUPERGROK_HEAVY"
+
+        val CONSUMER_PLANS: List<Pair<String, String>> = listOf(
+            "Free / none" to CONSUMER_PLAN_FREE,
+            "SuperGrok Lite" to CONSUMER_PLAN_SUPERGROK_LITE,
+            "SuperGrok" to CONSUMER_PLAN_SUPERGROK,
+            "SuperGrok Heavy" to CONSUMER_PLAN_SUPERGROK_HEAVY
+        )
+
+        fun normalizeConsumerPlan(plan: String?): String {
+            val p = plan?.trim()?.uppercase().orEmpty()
+            return CONSUMER_PLANS.map { it.second }.firstOrNull { it == p }
+                ?: CONSUMER_PLAN_FREE
+        }
+
+        fun consumerPlanLabel(plan: String?): String =
+            CONSUMER_PLANS.firstOrNull { it.second == normalizeConsumerPlan(plan) }?.first
+                ?: "Free / none"
 
         fun normalizeLocationCacheTimeoutMinutes(minutes: Int?): Int {
             val m = minutes ?: DEFAULT_LOCATION_CACHE_TIMEOUT_MINUTES

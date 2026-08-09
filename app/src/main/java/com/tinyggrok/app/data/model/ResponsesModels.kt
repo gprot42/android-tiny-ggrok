@@ -42,8 +42,8 @@ data class WebSearchFilters(
 
 /**
  * A single input turn. [content] is either a plain [String] (text-only / history)
- * or a [List] of [InputContent] parts (used when an image is attached). Gson
- * serializes based on the runtime type, so both shapes are emitted correctly.
+ * or a [List] of [InputContent] parts (used when one or more images are attached).
+ * Gson serializes based on the runtime type, so both shapes are emitted correctly.
  */
 data class InputMessage(
     val role: String,

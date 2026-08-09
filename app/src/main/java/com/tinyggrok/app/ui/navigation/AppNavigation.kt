@@ -9,6 +9,7 @@ import com.tinyggrok.app.ui.screens.ChatScreen
 import com.tinyggrok.app.ui.screens.DebugLogsScreen
 import com.tinyggrok.app.ui.screens.HistoryScreen
 import com.tinyggrok.app.ui.screens.SettingsScreen
+import com.tinyggrok.app.ui.screens.UsageScreen
 import com.tinyggrok.app.ui.screens.VoiceTranslatorScreen
 
 sealed class Screen(val route: String) {
@@ -18,6 +19,7 @@ sealed class Screen(val route: String) {
     object DebugLogs : Screen("debug_logs")
     object History : Screen("history")
     object VoiceTranslator : Screen("voice_translator")
+    object Usage : Screen("usage")
 }
 
 @Composable
@@ -31,13 +33,15 @@ fun AppNavigation(navController: NavHostController) {
                 onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
                 onNavigateToDebugLogs = { navController.navigate(Screen.DebugLogs.route) },
                 onNavigateToHistory = { navController.navigate(Screen.History.route) },
-                onNavigateToVoiceTranslator = { navController.navigate(Screen.VoiceTranslator.route) }
+                onNavigateToVoiceTranslator = { navController.navigate(Screen.VoiceTranslator.route) },
+                onNavigateToUsage = { navController.navigate(Screen.Usage.route) }
             )
         }
         composable(Screen.Settings.route) {
             SettingsScreen(
                 onNavigateBack = { navController.popBackStack() },
-                onNavigateToAbout = { navController.navigate(Screen.About.route) }
+                onNavigateToAbout = { navController.navigate(Screen.About.route) },
+                onNavigateToUsage = { navController.navigate(Screen.Usage.route) }
             )
         }
         composable(Screen.About.route) {
@@ -60,6 +64,12 @@ fun AppNavigation(navController: NavHostController) {
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
                 onNavigateToDebugLogs = { navController.navigate(Screen.DebugLogs.route) }
+            )
+        }
+        composable(Screen.Usage.route) {
+            UsageScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToSettings = { navController.navigate(Screen.Settings.route) }
             )
         }
     }
