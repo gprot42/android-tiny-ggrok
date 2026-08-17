@@ -26,9 +26,10 @@ object AppModule {
         return OkHttpClient.Builder()
             .addInterceptor(logging)
             .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
+            // Non-streaming Responses + web_search can sit idle until first byte for several minutes.
+            .readTimeout(10, TimeUnit.MINUTES)
             .writeTimeout(60, TimeUnit.SECONDS)
-            .callTimeout(180, TimeUnit.SECONDS)
+            .callTimeout(10, TimeUnit.MINUTES)
             .build()
     }
 
