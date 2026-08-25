@@ -714,8 +714,15 @@ private fun MessageItem(
             )
             SourcesList(urls = message.citations)
         } else {
+            // Compose Text layouts the full string on the main thread. Cap display so a
+            // huge paste cannot ANR the same way debug-log bodies used to.
+            val display = if (message.content.length > 20_000) {
+                message.content.take(20_000) + "…"
+            } else {
+                message.content
+            }
             Text(
-                text = message.content,
+                text = display,
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = fontSize.sp)
             )
         }

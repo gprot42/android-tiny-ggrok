@@ -212,13 +212,15 @@ class ChatRepository @Inject constructor(
             )
 
             if (debugMode) {
-                val requestJson = gson.toJson(request)
+                // Never keep raw image bytes in the debug log — a single 1024px JPEG
+                // is hundreds of KB of unbroken base64, which ANRs Compose Text layout.
+                val requestJson = gson.toJson(redactImagesForLog(request))
                 debugLogRepository.logOutgoing(
                     summary = "POST /v1/responses | model=${request.model} | turns=${input.size} | " +
                         "images=${imageBase64List.size} | tools=web_search | transit=$transitEnquiry",
                     body = requestJson
                 )
-                Log.d(TAG, "REQUEST: $requestJson")
+                Log.d(TAG, "REQUEST: ${sanitizeLogBody(requestJson, maxChars = 4000)}")
             }
 
             val response = apiService.responses(
@@ -246,7 +248,7 @@ class ChatRepository @Inject constructor(
                     summary = "HTTP 200 | usage=${response.usage?.totalTokens ?: "N/A"} tokens | citations=${citations.size}",
                     body = responseJson
                 )
-                Log.d(TAG, "RESPONSE: $responseJson")
+                Log.d(TAG, "RESPONSE: ${sanitizeLogBody(responseJson, maxChars = 4000)}")
             }
 
             Result.success(ChatResult(assistantMessage, usage, model = request.model, usedWebSearch = usedWebSearch, citations = citations))
@@ -457,4 +459,25 @@ class ChatRepository @Inject constructor(
 
         return out
     }
+}
+
+/** Replace image data-URLs with a length placeholder so debug logs stay small. */
+internal fun redactImagesForLog(request: ResponsesRequest): ResponsesRequest {
+    val redactedInput = request.input.map { msg ->
+        val content = msg.content
+        if (content is List<*>) {
+            val parts = content.map { part ->
+                if (part is InputContent && !part.imageUrl.isNullOrEmpty()) {
+                    val url = part.imageUrl
+                    part.copy(imageUrl = "data:image/jpeg;base64,<omitted ${url.length} chars>")
+                } else {
+                    part
+                }
+            }
+            msg.copy(content = parts)
+        } else {
+            msg
+        }
+    }
+    return request.copy(input = redactedInput)
 }
