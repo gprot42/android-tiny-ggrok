@@ -17,6 +17,8 @@ import com.tinyggrok.app.data.repository.DebugLogRepository
 import com.tinyggrok.app.data.repository.ResolvedAuth
 import com.tinyggrok.app.data.repository.ResponseHistoryRepository
 import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
+import com.tinyggrok.app.data.share.IncomingShare
+import com.tinyggrok.app.data.share.IncomingShareRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,8 +39,8 @@ const val MAX_ATTACHED_IMAGES = 10
 
 /** Per-1M-token prices (input, output) for known chat models. */
 private fun costRatesPerMillion(model: String): Pair<Double, Double> = when (model) {
-    AppDefaults.MODEL_GROK_4_5 -> 2.00 to 6.00
-    else -> 1.25 to 2.50 // grok-4.3 default
+    AppDefaults.MODEL_GROK_4_6, AppDefaults.MODEL_GROK_4_5 -> 2.00 to 6.00
+    else -> 2.00 to 6.00
 }
 
 data class AttachedImage(
@@ -96,6 +98,7 @@ class ChatViewModel @Inject constructor(
     private val locationRepository: LocationRepository,
     private val debugLogRepository: DebugLogRepository,
     private val responseHistoryRepository: ResponseHistoryRepository,
+    private val incomingShareRepository: IncomingShareRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -138,6 +141,35 @@ class ChatViewModel @Inject constructor(
                     locationRepository.stopGpsWarmup()
                 }
             }
+        }
+        viewModelScope.launch {
+            incomingShareRepository.pending.collect { share ->
+                if (share != null) {
+                    incomingShareRepository.consume()
+                    applyIncomingShare(share)
+                }
+            }
+        }
+    }
+
+    /** Prefill the composer from an Android share / process-text intent. Does not auto-send. */
+    fun applyIncomingShare(share: IncomingShare) {
+        val incomingText = share.text?.trim().orEmpty()
+        if (incomingText.isNotEmpty()) {
+            val existing = _uiState.value.prompt
+            val merged = if (existing.isBlank()) {
+                incomingText
+            } else {
+                existing.trimEnd() + "\n\n" + incomingText
+            }
+            _uiState.value = _uiState.value.copy(prompt = merged, errorMessage = null)
+        }
+        val uris = share.imageUris.mapNotNull { raw ->
+            runCatching { Uri.parse(raw) }.getOrNull()
+                ?.takeIf { it != Uri.EMPTY && !it.scheme.isNullOrBlank() }
+        }
+        if (uris.isNotEmpty()) {
+            attachImages(uris)
         }
     }
 

@@ -117,7 +117,7 @@ class SettingsRepository @Inject constructor(
     val fontSize: Flow<Float> = context.dataStore.data
         .map { preferences -> preferences[FONT_SIZE_KEY] ?: 14f }
 
-    /** Chat model id (e.g. grok-4.3 / grok-4.5). Defaults to [AppDefaults.DEFAULT_MODEL]. */
+    /** Chat model id (grok-4.6 / grok-4.5). Defaults to [AppDefaults.DEFAULT_MODEL]. */
     val chatModel: Flow<String> = context.dataStore.data
         .map { preferences ->
             AppDefaults.normalizeChatModel(preferences[CHAT_MODEL_KEY])

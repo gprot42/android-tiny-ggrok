@@ -97,6 +97,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.tinyggrok.app.data.share.formatConversationForShare
+import com.tinyggrok.app.data.share.htmlToPlainText
+import com.tinyggrok.app.data.share.startPlainTextShare
 import com.tinyggrok.app.ui.viewmodel.AttachedImage
 import com.tinyggrok.app.ui.viewmodel.ChatUiMessage
 import com.tinyggrok.app.ui.viewmodel.ChatViewModel
@@ -369,12 +372,12 @@ fun ChatScreen(
                                         webViewHeights[message.id] = h
                                     }
                                 },
-                                onShare = { text ->
-                                    val intent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_TEXT, text)
-                                    }
-                                    context.startActivity(Intent.createChooser(intent, "Share response"))
+                                onShare = { msg ->
+                                    startPlainTextShare(
+                                        context,
+                                        shareableMessageText(msg),
+                                        "Share response"
+                                    )
                                 }
                             )
                         }
@@ -435,9 +438,21 @@ fun ChatScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Bottom-left: History
-                TextButton(onClick = onNavigateToHistory) {
-                    Text("History")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onNavigateToHistory) {
+                        Text("History")
+                    }
+                    TextButton(
+                        onClick = {
+                            val text = formatConversationForShare(
+                                uiState.messages.map { it.role to shareableMessageText(it) }
+                            )
+                            startPlainTextShare(context, text, "Share conversation")
+                        },
+                        enabled = uiState.messages.isNotEmpty()
+                    ) {
+                        Text("Share")
+                    }
                 }
 
                 // Right side: prompt actions
@@ -608,7 +623,7 @@ private fun MessageItem(
     fontSize: Float,
     cachedWebViewHeightPx: Int = 0,
     onWebViewHeight: (Int) -> Unit = {},
-    onShare: ((String) -> Unit)? = null
+    onShare: ((ChatUiMessage) -> Unit)? = null
 ) {
     val clipboard = LocalClipboardManager.current
     val isAssistant = message.role == "assistant"
@@ -656,7 +671,7 @@ private fun MessageItem(
             if (isAssistant) {
                 val context = LocalContext.current
                 IconButton(
-                    onClick = { onShare?.invoke(message.content) },
+                    onClick = { onShare?.invoke(message) },
                     modifier = Modifier.size(32.dp)
                 ) {
                     Icon(Icons.Default.Share, contentDescription = "Share",
@@ -666,10 +681,7 @@ private fun MessageItem(
                 TextButton(
                     onClick = {
                         // Strip any HTML tags so the clipboard receives clean plain text
-                        val plain = android.text.Html
-                            .fromHtml(message.content, android.text.Html.FROM_HTML_MODE_COMPACT)
-                            .toString()
-                            .trim()
+                        val plain = htmlToPlainText(message.content)
                         clipboard.setText(AnnotatedString(plain))
                         Toast.makeText(context, "Response copied", Toast.LENGTH_SHORT).show()
                     }
@@ -788,6 +800,16 @@ private fun SourcesList(urls: List<String>) {
                     .padding(vertical = 4.dp)
             )
         }
+    }
+}
+
+private fun shareableMessageText(message: ChatUiMessage): String {
+    val body = htmlToPlainText(message.content)
+    val sources = message.citations.filter { it.isNotBlank() }.distinct()
+    return if (sources.isEmpty()) {
+        body
+    } else {
+        body + "\n\nSources:\n" + sources.joinToString("\n")
     }
 }
 

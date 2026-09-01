@@ -1,5 +1,6 @@
 package com.tinyggrok.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -9,6 +10,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
 import com.tinyggrok.app.data.local.LocationRepository
 import com.tinyggrok.app.data.local.SettingsRepository
+import com.tinyggrok.app.data.share.IncomingShareRepository
+import com.tinyggrok.app.data.share.toIncomingShare
 import com.tinyggrok.app.ui.navigation.AppNavigation
 import com.tinyggrok.app.ui.theme.AppTheme
 import com.tinyggrok.app.ui.theme.TinyGrokTheme
@@ -21,16 +24,36 @@ import javax.inject.Inject
 class MainActivity : ComponentActivity() {
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var locationRepository: LocationRepository
+    @Inject lateinit var incomingShareRepository: IncomingShareRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Rotation restores the same intent; skip so we don't re-apply a share
+        // the user already edited or sent. Process death drops an unsent share.
+        if (savedInstanceState == null) {
+            handleShareIntent(intent)
+        }
         setContent {
             val theme by settingsRepository.theme.collectAsState(initial = AppTheme.DARK)
             TinyGrokTheme(appTheme = theme) {
                 val navController = rememberNavController()
-                AppNavigation(navController = navController)
+                AppNavigation(
+                    navController = navController,
+                    incomingShareRepository = incomingShareRepository
+                )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShareIntent(intent)
+    }
+
+    private fun handleShareIntent(intent: Intent?) {
+        val share = intent?.toIncomingShare(this) ?: return
+        incomingShareRepository.offer(share)
     }
 
     override fun onStart() {

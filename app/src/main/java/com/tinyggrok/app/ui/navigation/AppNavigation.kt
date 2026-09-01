@@ -1,9 +1,11 @@
 package com.tinyggrok.app.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.tinyggrok.app.data.share.IncomingShareRepository
 import com.tinyggrok.app.ui.screens.AboutScreen
 import com.tinyggrok.app.ui.screens.ChatScreen
 import com.tinyggrok.app.ui.screens.DebugLogsScreen
@@ -23,7 +25,22 @@ sealed class Screen(val route: String) {
 }
 
 @Composable
-fun AppNavigation(navController: NavHostController) {
+fun AppNavigation(
+    navController: NavHostController,
+    incomingShareRepository: IncomingShareRepository
+) {
+    LaunchedEffect(navController) {
+        incomingShareRepository.navigateToChat.collect {
+            if (navController.currentDestination?.route != Screen.Chat.route) {
+                val popped = navController.popBackStack(Screen.Chat.route, inclusive = false)
+                if (!popped && navController.currentDestination?.route != Screen.Chat.route) {
+                    navController.navigate(Screen.Chat.route) {
+                        launchSingleTop = true
+                    }
+                }
+            }
+        }
+    }
     NavHost(
         navController = navController,
         startDestination = Screen.Chat.route

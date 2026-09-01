@@ -14,4 +14,6 @@
     <string name="error_invalid_key">Invalid API key. Please check your settings.</string>
     <string name="error_network">Network error. Please try again.</string>
     <string name="error_rate_limit">Rate limit exceeded. Please wait.</string>
+    <string name="share_to_app">Ask Tiny Ggrok</string>
+    <string name="process_text_label">Ask Tiny Ggrok</string>
 </resources>

@@ -4,6 +4,7 @@ import android.util.Log
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonElement
 import com.tinyggrok.app.AppDefaults
+import com.tinyggrok.app.data.api.ResponsesSseParser
 import com.tinyggrok.app.data.api.XaiApiService
 import com.tinyggrok.app.data.model.InputContent
 import com.tinyggrok.app.data.model.InputMessage
@@ -13,8 +14,11 @@ import com.tinyggrok.app.data.model.ResponsesRequest
 import com.tinyggrok.app.data.model.ResponsesResponse
 import com.tinyggrok.app.data.model.TextContent
 import com.tinyggrok.app.data.model.Usage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import retrofit2.HttpException
-import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -64,17 +68,22 @@ class ChatRepository @Inject constructor(
                 modelCount = ids.size,
                 sampleModels = ids.take(5)
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: HttpException) {
             val body = try { e.response()?.errorBody()?.string().orEmpty() } catch (_: Throwable) { "" }
             Log.e(TAG, "API key check HTTP ${e.code()}: ${body.take(500)}")
             // Reuse chat error mapping so credits vs bad-key is clear.
             ApiKeyCheckResult.Invalid(friendlyHttpError(e.code(), body, e.message()))
-        } catch (e: SocketTimeoutException) {
-            ApiKeyCheckResult.NetworkError("Timed out contacting api.x.ai. Check network.")
-        } catch (e: UnknownHostException) {
-            ApiKeyCheckResult.NetworkError("Can't reach api.x.ai (DNS). Check network.")
         } catch (e: Exception) {
-            ApiKeyCheckResult.NetworkError("${e.javaClass.simpleName}: ${e.message ?: "unknown error"}")
+            when {
+                isTimeoutFailure(e) ->
+                    ApiKeyCheckResult.NetworkError("Timed out contacting api.x.ai. Check network.")
+                e.causeChain().any { it is UnknownHostException } ->
+                    ApiKeyCheckResult.NetworkError("Can't reach api.x.ai (DNS). Check network.")
+                else ->
+                    ApiKeyCheckResult.NetworkError("${e.javaClass.simpleName}: ${e.message ?: "unknown error"}")
+            }
         }
     }
 
@@ -202,13 +211,16 @@ class ChatRepository @Inject constructor(
 
             // Keep web_search open (no allowed_domains lock): transit still needs general
             // search for "nearest station" etc. National Rail is enforced via instructions.
-            val request = ResponsesRequest(
-                model = model,
+            var request = ResponsesRequest(
+                model = AppDefaults.normalizeChatModel(model),
                 input = input,
                 instructions = instructions,
                 tools = listOf(ResponseTool(type = "web_search")),
                 // Slightly lower temperature for timetable / factual transit answers
-                temperature = if (transitEnquiry) 0.3 else 0.7
+                temperature = if (transitEnquiry) 0.3 else 0.7,
+                // Streaming is required for agent tools: web_search/reasoning can sit
+                // silent for minutes; SSE events (and HTTP/2 pings) keep the socket alive.
+                stream = true
             )
 
             if (debugMode) {
@@ -216,25 +228,55 @@ class ChatRepository @Inject constructor(
                 // is hundreds of KB of unbroken base64, which ANRs Compose Text layout.
                 val requestJson = gson.toJson(redactImagesForLog(request))
                 debugLogRepository.logOutgoing(
-                    summary = "POST /v1/responses | model=${request.model} | turns=${input.size} | " +
+                    summary = "POST /v1/responses stream | model=${request.model} | turns=${input.size} | " +
                         "images=${imageBase64List.size} | tools=web_search | transit=$transitEnquiry",
                     body = requestJson
                 )
                 Log.d(TAG, "REQUEST: ${sanitizeLogBody(requestJson, maxChars = 4000)}")
             }
 
-            val response = apiService.responses(
-                auth = "Bearer $apiKey",
-                request = request
-            )
-
-            val baseMessage = extractText(response).ifBlank { "No response" }
-            val citations = extractCitations(response)
+            val call = try {
+                executeResponses(apiKey, request, debugMode)
+            } catch (e: HttpException) {
+                val body = try { e.response()?.errorBody()?.string().orEmpty() } catch (_: Throwable) { "" }
+                if (request.model != AppDefaults.BACKUP_MODEL &&
+                    isUnknownModelFailure(e.code(), body)
+                ) {
+                    if (debugMode) {
+                        debugLogRepository.logIncoming(
+                            summary = "MODEL FALLBACK ${request.model} → ${AppDefaults.BACKUP_MODEL}",
+                            body = body.take(500)
+                        )
+                    }
+                    request = request.copy(model = AppDefaults.BACKUP_MODEL)
+                    executeResponses(apiKey, request, debugMode)
+                } else {
+                    Log.e(TAG, "HTTP ERROR ${e.code()}: ${body.take(2000)}")
+                    if (debugMode) {
+                        debugLogRepository.logIncoming(
+                            summary = "HTTP ${e.code()}: ${e.message()}",
+                            body = body.take(2000)
+                        )
+                    }
+                    return Result.failure(
+                        RuntimeException(friendlyHttpError(e.code(), body, e.message()))
+                    )
+                }
+            }
+            val response = call.response
+            val baseMessage = response?.let { extractText(it) }.orEmpty()
+                .ifBlank { call.accumulatedText }
+                .ifBlank { "No response" }
+            val citations = LinkedHashSet<String>().apply {
+                if (response != null) addAll(extractCitations(response))
+                addAll(call.citations)
+            }.toList()
             val assistantMessage = if (responseFormat != "markdown") sanitizeHtml(baseMessage) else baseMessage
-            val usedWebSearch = response.output?.any { it.type == "web_search_call" } == true
-                    || citations.isNotEmpty()
+            val usedWebSearch = call.usedWebSearch ||
+                response?.output?.any { it.type == "web_search_call" } == true ||
+                citations.isNotEmpty()
 
-            val usage = response.usage?.let {
+            val usage = response?.usage?.let {
                 Usage(
                     prompt_tokens = it.inputTokens,
                     completion_tokens = it.outputTokens,
@@ -243,15 +285,17 @@ class ChatRepository @Inject constructor(
             }
 
             if (debugMode) {
-                val responseJson = gson.toJson(response)
+                val responseJson = gson.toJson(response ?: mapOf("text" to call.accumulatedText))
                 debugLogRepository.logIncoming(
-                    summary = "HTTP 200 | usage=${response.usage?.totalTokens ?: "N/A"} tokens | citations=${citations.size}",
+                    summary = "HTTP 200 stream | usage=${response?.usage?.totalTokens ?: "N/A"} tokens | citations=${citations.size}",
                     body = responseJson
                 )
                 Log.d(TAG, "RESPONSE: ${sanitizeLogBody(responseJson, maxChars = 4000)}")
             }
 
             Result.success(ChatResult(assistantMessage, usage, model = request.model, usedWebSearch = usedWebSearch, citations = citations))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: HttpException) {
             val body = try { e.response()?.errorBody()?.string().orEmpty() } catch (_: Throwable) { "" }
             // Always log the raw body so credit false-positives can be diagnosed in logcat.
@@ -263,21 +307,120 @@ class ChatRepository @Inject constructor(
                 )
             }
             Result.failure(RuntimeException(friendlyHttpError(e.code(), body, e.message())))
-        } catch (e: SocketTimeoutException) {
-            if (debugMode) {
-                debugLogRepository.logIncoming(summary = "TIMEOUT", body = e.message ?: "Socket timeout")
-            }
-            Result.failure(RuntimeException("Timed out contacting api.x.ai. Check network."))
-        } catch (e: UnknownHostException) {
-            if (debugMode) {
-                debugLogRepository.logIncoming(summary = "DNS ERROR", body = e.message ?: "Unknown host")
-            }
-            Result.failure(RuntimeException("Can't reach api.x.ai (DNS). Check network."))
         } catch (e: Exception) {
             if (debugMode) {
-                debugLogRepository.logIncoming(summary = "EXCEPTION: ${e.javaClass.simpleName}", body = e.message ?: "unknown")
+                debugLogRepository.logIncoming(
+                    summary = when {
+                        isTimeoutFailure(e) -> "TIMEOUT"
+                        e.causeChain().any { it is UnknownHostException } -> "DNS ERROR"
+                        else -> "EXCEPTION: ${e.javaClass.simpleName}"
+                    },
+                    body = e.message ?: "unknown"
+                )
             }
-            Result.failure(RuntimeException("${e.javaClass.simpleName}: ${e.message ?: "unknown error"}"))
+            when {
+                isTimeoutFailure(e) ->
+                    Result.failure(
+                        RuntimeException(
+                            "Timed out contacting api.x.ai. The model may still be searching " +
+                                "or reasoning — wait a moment and retry. Check network if this keeps happening."
+                        )
+                    )
+                e.causeChain().any { it is UnknownHostException } ->
+                    Result.failure(RuntimeException("Can't reach api.x.ai (DNS). Check network."))
+                else ->
+                    Result.failure(RuntimeException("${e.javaClass.simpleName}: ${e.message ?: "unknown error"}"))
+            }
+        }
+    }
+
+    private data class ResponsesCallResult(
+        val response: ResponsesResponse?,
+        val accumulatedText: String,
+        val citations: List<String>,
+        val usedWebSearch: Boolean
+    )
+
+    /**
+     * One extra attempt only for connect/DNS/reset. Do not retry a request that
+     * already spent minutes streaming — that looks like "timed out repeatedly"
+     * and can double-bill.
+     */
+    private suspend fun executeResponses(
+        apiKey: String,
+        request: ResponsesRequest,
+        debugMode: Boolean
+    ): ResponsesCallResult {
+        var last: Exception? = null
+        repeat(2) { attempt ->
+            try {
+                return readResponses(apiKey, request, debugMode)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (attempt == 0 && isTransientConnectFailure(e)) {
+                    if (debugMode) {
+                        debugLogRepository.logIncoming(
+                            summary = "RETRY after connect failure",
+                            body = "${e.javaClass.simpleName}: ${e.message}"
+                        )
+                    }
+                    last = e
+                    delay(750)
+                } else {
+                    throw e
+                }
+            }
+        }
+        throw last ?: IllegalStateException("connect retry failed")
+    }
+
+    private suspend fun readResponses(
+        apiKey: String,
+        request: ResponsesRequest,
+        debugMode: Boolean
+    ): ResponsesCallResult = withContext(Dispatchers.IO) {
+        val http = apiService.responsesStream(
+            auth = "Bearer $apiKey",
+            request = request
+        )
+        if (!http.isSuccessful) {
+            throw HttpException(http)
+        }
+        val body = http.body() ?: throw IllegalStateException("Empty body from api.x.ai")
+        body.use { rb ->
+            val contentType = rb.contentType()?.toString().orEmpty()
+                .ifBlank { http.headers()["Content-Type"].orEmpty() }
+                .lowercase()
+            if (contentType.contains("json") && !contentType.contains("event-stream")) {
+                val json = rb.string()
+                if (debugMode) {
+                    debugLogRepository.logIncoming(
+                        summary = "JSON (non-SSE) responses body",
+                        body = sanitizeLogBody(json, maxChars = 4000)
+                    )
+                }
+                val response = gson.fromJson(json, ResponsesResponse::class.java)
+                return@withContext ResponsesCallResult(
+                    response = response,
+                    accumulatedText = "",
+                    citations = emptyList(),
+                    usedWebSearch = false
+                )
+            }
+            val parsed = ResponsesSseParser(gson).parse(rb.charStream())
+            if (parsed.errorMessage != null) {
+                throw RuntimeException(parsed.errorMessage)
+            }
+            if (parsed.completed == null && parsed.accumulatedText.isBlank()) {
+                throw IllegalStateException("Empty stream from api.x.ai")
+            }
+            ResponsesCallResult(
+                response = parsed.completed,
+                accumulatedText = parsed.accumulatedText,
+                citations = parsed.citations,
+                usedWebSearch = parsed.usedWebSearch
+            )
         }
     }
 

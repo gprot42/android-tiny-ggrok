@@ -45,6 +45,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.tinyggrok.app.data.repository.ResponseHistoryEntry
+import com.tinyggrok.app.data.share.htmlToPlainText
+import com.tinyggrok.app.data.share.startPlainTextShare
 import com.tinyggrok.app.ui.viewmodel.HistoryViewModel
 import kotlin.math.ceil
 import org.commonmark.ext.gfm.tables.TablesExtension
@@ -140,13 +142,13 @@ private fun HistoryEntryCard(entry: ResponseHistoryEntry, index: Int) {
                     )
                 }
                 TextButton(onClick = {
-                    val intent = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, entry.response)
-                    }
-                    context.startActivity(Intent.createChooser(intent, "Share response"))
+                    startPlainTextShare(
+                        context,
+                        htmlToPlainText(entry.response),
+                        "Share response"
+                    )
                 }) { Text("Share") }
-                TextButton(onClick = { clipboard.setText(AnnotatedString(entry.response)) }) {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(htmlToPlainText(entry.response))) }) {
                     Text("Copy")
                 }
             }

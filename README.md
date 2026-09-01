@@ -7,19 +7,20 @@ A lightweight native Android app for chatting with xAI's Grok models.
 - Secure API key entry and storage in Settings
 - **Credits & usage** screen (chat top bar **Credits**): live prepaid API balance, postpaid limits, model rate quotas via Management API; SuperGrok plan reference (consumer quotas are not exposed by API)
 - Three themes: Light, Dark, Tokyo Night
-- Chat models: **Grok 4.3** (default) or **Grok 4.5** — selectable in Settings
+- Chat models: **Grok 4.6** (default) or **Grok 4.5** (backup) — only these two, selectable in Settings; 4.5 is used automatically if 4.6 is unavailable
 - Uses xAI Agent Tools / Responses API (`https://api.x.ai/v1/responses`)
 - **Live web search**: when Grok is unsure or a question depends on recent/factual information, it automatically uses the `web_search` tool instead of guessing. Source links are appended to answers (tap to open, long-press to copy)
 - **UK transit lookups**: prefers official National Rail / TOC sites for live times and disruptions (see [UK transit web sources](#uk-transit-web-sources)); open web for everything else
 - **GPS location** (on by default; optional — turn off in Settings): so you can ask things like *“find me transport from my current location to X”* without naming a station. Approximate coordinates/place are attached to the prompt when permission is granted; the model uses them with web search (National Rail, Thameslink, TfL, etc.) to plan from nearest stations/stops. Not required for general chat
 - Clean Jetpack Compose UI with MVVM architecture
 - Chat with message history (in-memory for now) plus response history screen
+- **Share to Tiny Ggrok**: from any app, share text, links, or images into the chat prompt (also in the text-selection menu as **Ask Tiny Ggrok**). Share a Grok reply or the whole conversation back out via the system share sheet
 - Pinch-to-zoom on the whole chat screen
 - Image attach on prompts
 - Voice translator (optional, Grok Voice API)
 - Debug mode with API request/response logs
 - Show estimated cost per query (optional)
-- Streaming support planned
+- **Streaming** Responses API (SSE) for chat + `web_search`, with HTTP/2 pings, so long reasoning/search does not hit “Timed out contacting api.x.ai”
 
 ## UK transit web sources
 

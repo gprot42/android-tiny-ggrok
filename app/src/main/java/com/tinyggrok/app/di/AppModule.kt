@@ -25,11 +25,15 @@ object AppModule {
         }
         return OkHttpClient.Builder()
             .addInterceptor(logging)
-            .connectTimeout(30, TimeUnit.SECONDS)
-            // Non-streaming Responses + web_search can sit idle until first byte for several minutes.
+            .connectTimeout(60, TimeUnit.SECONDS)
+            // Idle gap between SSE events / first byte. Grok + web_search can think
+            // for several minutes between tokens; HTTP/2 PING keeps NAT mappings alive.
             .readTimeout(10, TimeUnit.MINUTES)
-            .writeTimeout(60, TimeUnit.SECONDS)
-            .callTimeout(10, TimeUnit.MINUTES)
+            .writeTimeout(3, TimeUnit.MINUTES)
+            // Whole request, including several web_search rounds. xAI's SDK default is 27 min.
+            .callTimeout(30, TimeUnit.MINUTES)
+            .pingInterval(20, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .build()
     }
 

@@ -210,6 +210,11 @@ fun SettingsScreen(
                         ) { Text(label, maxLines = 1) }
                     }
                 }
+                Text(
+                    "Grok 4.6 by default. 4.5 is the backup if 4.6 is unavailable.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 Spacer(Modifier.height(12.dp))
                 SectionLabel("Response format")
