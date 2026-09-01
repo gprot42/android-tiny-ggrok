@@ -1,5 +1,7 @@
 # Tiny Grok - Android Client
 
+![Tiny Ggrok chat](docs/screenshot.png)
+
 A lightweight native Android app for chatting with xAI's Grok models.
 
 ## Features
