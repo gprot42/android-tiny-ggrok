@@ -1,5 +1,6 @@
 package com.tinyggrok.app.data.repository
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -8,6 +9,9 @@ import java.net.ConnectException
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 class NetworkFailuresTest {
 
@@ -38,6 +42,49 @@ class NetworkFailuresTest {
         assertFalse(isUnknownModelFailure(429, "rate limit exceeded for model grok-4.6"))
         assertFalse(isUnknownModelFailure(400, "invalid temperature"))
         assertFalse(isUnknownModelFailure(500, "model overloaded"))
+    }
+
+    @Test
+    fun tlsHandshakeResetIsTransientButBadCertIsNot() {
+        assertTrue(
+            isTransientConnectFailure(
+                SSLHandshakeException("Connection closed by peer")
+            )
+        )
+        assertTrue(isTransientConnectFailure(SSLException("Read error: ssl=0x7: I/O error during system call, Connection reset by peer")))
+        assertFalse(isTransientConnectFailure(SSLPeerUnverifiedException("Hostname api.x.ai not verified")))
+    }
+
+    @Test
+    fun streamInterruptionCoversHttp2ResetAndEof() {
+        assertTrue(isStreamInterruption(java.io.EOFException()))
+        assertTrue(isStreamInterruption(java.io.IOException("stream was reset: CANCEL")))
+        assertTrue(isStreamInterruption(RuntimeException("wrap", SocketException("Connection reset"))))
+        assertTrue(isStreamInterruption(UnknownHostException("api.x.ai")))
+        assertFalse(isStreamInterruption(SocketTimeoutException("timeout")))
+        assertFalse(isStreamInterruption(IllegalStateException("Empty stream from api.x.ai")))
+    }
+
+    @Test
+    fun retryableHttpStatuses() {
+        for (code in listOf(408, 425, 429, 500, 502, 503, 504, 529)) {
+            assertTrue("expected $code retryable", isRetryableHttpStatus(code))
+        }
+        for (code in listOf(400, 401, 402, 403, 404, 413, 422)) {
+            assertFalse("expected $code not retryable", isRetryableHttpStatus(code))
+        }
+    }
+
+    @Test
+    fun retryDelayGrowsAndHonoursRetryAfter() {
+        assertEquals(500L, retryDelayMs(1))
+        assertEquals(1_500L, retryDelayMs(2))
+        assertEquals(3_000L, retryDelayMs(3))
+        assertEquals(2_000L, retryDelayMs(1, "2"))
+        // Never shorter than the base back-off, never longer than the cap.
+        assertEquals(1_500L, retryDelayMs(2, "0"))
+        assertEquals(500L, retryDelayMs(1, "3600"))
+        assertEquals(500L, retryDelayMs(1, "Wed, 21 Oct 2026 07:28:00 GMT"))
     }
 
     @Test

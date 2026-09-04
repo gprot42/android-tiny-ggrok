@@ -21,6 +21,7 @@ import com.tinyggrok.app.data.share.IncomingShare
 import com.tinyggrok.app.data.share.IncomingShareRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -36,6 +37,54 @@ private const val JPEG_QUALITY = 85
 
 /** Max images the user can attach to a single prompt (API / payload safety). */
 const val MAX_ATTACHED_IMAGES = 10
+
+/** Newest assistant turns kept as context (each with its paired user prompt). */
+internal const val MAX_HISTORY_ASSISTANT_TURNS = 10
+
+/**
+ * Character budget for prior turns sent with each prompt. HTML replies run to several
+ * KB each; ten of them is 30–60k characters of prompt, which slows time-to-first-token
+ * and costs input tokens on every send. Oldest turns are dropped first; the most recent
+ * exchange is always kept.
+ */
+internal const val MAX_HISTORY_CHARS = 24_000
+
+/**
+ * How long a send may wait for a fresh GPS fix when the cache is stale. The warm-up on
+ * app start usually fills the cache already; beyond this we fall back to last-known
+ * coordinates rather than holding the whole query for the 25 s GPS session.
+ */
+internal const val SEND_LOCATION_WAIT_MS = 3_000L
+
+/**
+ * Trim [messages] to the last [maxAssistantTurns] assistant replies (plus their user
+ * prompts), then drop oldest turns until the total content fits [maxChars].
+ */
+internal fun trimHistory(
+    messages: List<ChatUiMessage>,
+    maxAssistantTurns: Int = MAX_HISTORY_ASSISTANT_TURNS,
+    maxChars: Int = MAX_HISTORY_CHARS
+): List<ChatUiMessage> {
+    var assistantCount = 0
+    val recent = messages.reversed()
+        .takeWhile { msg ->
+            if (msg.role == "assistant") assistantCount++
+            assistantCount <= maxAssistantTurns
+        }
+        .reversed()
+    if (recent.isEmpty()) return recent
+
+    // Keep the newest exchange whole even if it alone exceeds the budget.
+    val lastUserIdx = recent.indexOfLast { it.role == "user" }
+    val minimumStart = if (lastUserIdx >= 0) lastUserIdx else recent.lastIndex
+    var start = 0
+    var total = recent.sumOf { it.content.length }
+    while (total > maxChars && start < minimumStart) {
+        total -= recent[start].content.length
+        start++
+    }
+    return recent.subList(start, recent.size)
+}
 
 /** Per-1M-token prices (input, output) for known chat models. */
 private fun costRatesPerMillion(model: String): Pair<Double, Double> = when (model) {
@@ -105,6 +154,8 @@ class ChatViewModel @Inject constructor(
     val uiState: StateFlow<ChatUiState> = _uiState
 
     init {
+        // Open the TLS connection to api.x.ai now so the first send doesn't pay for it.
+        chatRepository.warmUpConnection(force = true)
         viewModelScope.launch {
             settingsRepository.showCost.collect { show ->
                 _uiState.value = _uiState.value.copy(showCost = show)
@@ -174,7 +225,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun updatePrompt(prompt: String) {
+        val wasBlank = _uiState.value.prompt.isBlank()
         _uiState.value = _uiState.value.copy(prompt = prompt, errorMessage = null)
+        // User started composing: make sure a warm connection is waiting for them.
+        if (wasBlank && prompt.isNotBlank()) chatRepository.warmUpConnection()
     }
 
     fun attachImages(uris: List<Uri>) {
@@ -255,10 +309,25 @@ class ChatViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            // Kick off the (possibly slow) GPS lookup immediately so it overlaps with
+            // auth resolution and settings reads instead of running after them.
+            val locationDeferred = async {
+                if (settingsRepository.locationEnabled.first()) {
+                    runCatching {
+                        locationRepository
+                            .getApproximateLocation(waitTimeoutMs = SEND_LOCATION_WAIT_MS)
+                            ?.toInstructionSnippet()
+                    }.getOrNull()
+                } else {
+                    null
+                }
+            }
+
             val auth = superGrokAuthRepository.resolveAuth()
             val apiKey = when (auth) {
                 is ResolvedAuth.Ok -> auth.bearerToken
                 is ResolvedAuth.Missing -> {
+                    locationDeferred.cancel()
                     _uiState.value = _uiState.value.copy(errorMessage = auth.message)
                     return@launch
                 }
@@ -287,26 +356,11 @@ class ChatViewModel @Inject constructor(
                 lastSentPrompt = prompt
             )
 
-            // Keep only the last 10 assistant responses (and their paired user messages)
-            val history = previousMessages
-                .let { msgs ->
-                    var assistantCount = 0
-                    msgs.reversed()
-                        .takeWhile { msg ->
-                            if (msg.role == "assistant") assistantCount++
-                            assistantCount <= 10
-                        }
-                        .reversed()
-                }
+            // Recent turns only, within a character budget (see trimHistory).
+            val history = trimHistory(previousMessages)
                 .map { msg -> Message(role = msg.role, text = msg.content) }
 
-            val locationContext = if (settingsRepository.locationEnabled.first()) {
-                runCatching {
-                    locationRepository.getApproximateLocation()?.toInstructionSnippet()
-                }.getOrNull()
-            } else {
-                null
-            }
+            val locationContext = locationDeferred.await()
 
             val result = chatRepository.sendMessage(
                 apiKey = apiKey,

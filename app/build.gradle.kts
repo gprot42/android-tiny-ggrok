@@ -19,8 +19,8 @@ android {
         applicationId = "com.tinyggrok.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.0.16"
+        versionCode = 17
+        versionName = "0.0.17"
 
         val buildDate = SimpleDateFormat("yyyy-MM-dd HH:mm 'UTC'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }
@@ -68,6 +68,10 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions {
+        // Let plain-JVM unit tests touch android.util.Log etc. without a stub crash.
+        unitTests.isReturnDefaultValues = true
+    }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -98,6 +102,8 @@ dependencies {
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    // DNS-over-HTTPS fallback when the network's resolver cannot find api.x.ai
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
 
     // DataStore for settings
     implementation("androidx.datastore:datastore-preferences:1.1.1")

@@ -1,5 +1,8 @@
 package com.tinyggrok.app.data.repository
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonElement
@@ -14,14 +17,37 @@ import com.tinyggrok.app.data.model.ResponsesRequest
 import com.tinyggrok.app.data.model.ResponsesResponse
 import com.tinyggrok.app.data.model.TextContent
 import com.tinyggrok.app.data.model.Usage
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import retrofit2.HttpException
+import java.io.IOException
+import java.io.Reader
 import java.net.UnknownHostException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** How many times a single send may hit the API before we give up (1 + retries). */
+internal const val MAX_RESPONSES_ATTEMPTS = 3
+
+/** Re-warm the pooled TLS connection if it has been idle longer than this. */
+private const val WARMUP_INTERVAL_MS = 4 * 60 * 1_000L
+
+/**
+ * Thrown when the SSE connection drops before a single byte of the body arrived.
+ * Nothing was generated/billed, so the caller may safely retry.
+ */
+internal class EarlyStreamFailure(cause: Throwable) :
+    IOException("Stream dropped before any data arrived: ${cause.message}", cause)
 
 data class ChatResult(
     val assistantMessage: String,
@@ -46,10 +72,52 @@ sealed class ApiKeyCheckResult {
 @Singleton
 class ChatRepository @Inject constructor(
     private val apiService: XaiApiService,
-    private val debugLogRepository: DebugLogRepository
+    private val debugLogRepository: DebugLogRepository,
+    private val okHttpClient: OkHttpClient,
+    @ApplicationContext private val context: Context
 ) {
     private val gson = GsonBuilder().setPrettyPrinting().create()
     private val TAG = "ChatRepository"
+    private val warmupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val warmupInFlight = AtomicBoolean(false)
+    private val lastWarmupMs = AtomicLong(0L)
+
+    /**
+     * Pre-resolve DNS and open (or refresh) the pooled HTTP/2 + TLS connection to
+     * api.x.ai so the first real request skips the handshake (~0.5–1.5 s on mobile).
+     * Fire-and-forget; failures are logged only. Unauthenticated HEAD → quick 401/404,
+     * which still leaves the connection in OkHttp's pool.
+     */
+    fun warmUpConnection(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastWarmupMs.get() < WARMUP_INTERVAL_MS) return
+        if (!warmupInFlight.compareAndSet(false, true)) return
+        warmupScope.launch {
+            try {
+                val request = Request.Builder()
+                    .url("https://api.x.ai/v1/models")
+                    .head()
+                    .build()
+                okHttpClient.newCall(request).execute().use { resp ->
+                    Log.d(TAG, "Connection warm-up: HTTP ${resp.code} via ${resp.protocol}")
+                }
+                lastWarmupMs.set(System.currentTimeMillis())
+            } catch (e: Exception) {
+                Log.w(TAG, "Connection warm-up failed: ${e.javaClass.simpleName}: ${e.message}")
+            } finally {
+                warmupInFlight.set(false)
+            }
+        }
+    }
+
+    /** Fast local check so an offline device gets an instant, honest error instead of a DNS stall. */
+    private fun isNetworkAvailable(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true // can't tell — let the request try
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
 
     /**
      * Verify an xAI chat API key by calling GET /v1/models (no chat tokens billed).
@@ -80,7 +148,7 @@ class ChatRepository @Inject constructor(
                 isTimeoutFailure(e) ->
                     ApiKeyCheckResult.NetworkError("Timed out contacting api.x.ai. Check network.")
                 e.causeChain().any { it is UnknownHostException } ->
-                    ApiKeyCheckResult.NetworkError("Can't reach api.x.ai (DNS). Check network.")
+                    ApiKeyCheckResult.NetworkError(dnsFailureMessage("api.x.ai"))
                 else ->
                     ApiKeyCheckResult.NetworkError("${e.javaClass.simpleName}: ${e.message ?: "unknown error"}")
             }
@@ -98,6 +166,17 @@ class ChatRepository @Inject constructor(
         /** Optional approximate location snippet already formatted for instructions. */
         locationContext: String? = null
     ): Result<ChatResult> {
+        if (!isNetworkAvailable()) {
+            if (debugMode) {
+                debugLogRepository.logIncoming(
+                    summary = "OFFLINE",
+                    body = "No active network with internet capability; request not sent."
+                )
+            }
+            return Result.failure(
+                RuntimeException("No internet connection. Turn on Wi-Fi or mobile data and retry.")
+            )
+        }
         return try {
             val transitEnquiry = looksLikeTransitEnquiry(text)
             val formatInstructions = when (responseFormat) {
@@ -111,9 +190,13 @@ class ChatRepository @Inject constructor(
                         "reliably know, use the web_search tool to find accurate, up-to-date information " +
                         "instead of guessing. Prefer official primary sources when available."
                 )
-                append(" ")
-                // Hard requirements first — soft "prefer" lists alone are ignored by the model.
-                append(
+                // The rail playbook is only sent for transit-looking prompts. Sending it on
+                // every turn added ~1k prompt tokens and nudged the model into web_search
+                // (and slow answers) for unrelated questions.
+                if (transitEnquiry) {
+                    append(" ")
+                    // Hard requirements first — soft "prefer" lists alone are ignored by the model.
+                    append(
                     "UK RAIL / LIVE TIMES (mandatory when the user asks about trains, departures, arrivals, " +
                         "journeys, delays, disruptions, platforms, or transport from A/here to B):\n" +
                         "1. You MUST call web_search before giving any clock times, schedules, or disruption claims. " +
@@ -130,8 +213,8 @@ class ChatRepository @Inject constructor(
                         "5. Always include clickable source URLs (especially nationalrail.co.uk) in the answer. " +
                         "If web_search cannot retrieve live boards, say so clearly and still give the " +
                         "National Rail links the user can open.\n"
-                )
-                append(
+                    )
+                    append(
                     "Preferred official sources — hubs: https://www.nationalrail.co.uk , " +
                         "https://realtime.nationalrail.co.uk , https://www.networkrail.co.uk . " +
                         "St Albans / nearby: Thameslink https://www.thameslinkrailway.com " +
@@ -148,8 +231,7 @@ class ChatRepository @Inject constructor(
                         "westmidlandsrailway.co.uk, scotrail.co.uk, tfw.wales, hulltrains.co.uk, " +
                         "grandcentralrail.com, lumo.co.uk, sleeper.scot. " +
                         "For non-UK transit use official operators; for other topics use open web_search."
-                )
-                if (transitEnquiry) {
+                    )
                     append(" ")
                     append(
                         "THIS USER MESSAGE IS A TRANSIT/RAIL ENQUIRY. " +
@@ -327,7 +409,14 @@ class ChatRepository @Inject constructor(
                         )
                     )
                 e.causeChain().any { it is UnknownHostException } ->
-                    Result.failure(RuntimeException("Can't reach api.x.ai (DNS). Check network."))
+                    Result.failure(RuntimeException(dnsFailureMessage("api.x.ai")))
+                isStreamInterruption(e) ->
+                    Result.failure(
+                        RuntimeException(
+                            "Connection to api.x.ai dropped (${e.causeChain().last().javaClass.simpleName}). " +
+                                "Retried ${MAX_RESPONSES_ATTEMPTS - 1}x without luck — check signal and try again."
+                        )
+                    )
                 else ->
                     Result.failure(RuntimeException("${e.javaClass.simpleName}: ${e.message ?: "unknown error"}"))
             }
@@ -342,37 +431,63 @@ class ChatRepository @Inject constructor(
     )
 
     /**
-     * One extra attempt only for connect/DNS/reset. Do not retry a request that
-     * already spent minutes streaming — that looks like "timed out repeatedly"
-     * and can double-bill.
+     * Up to [MAX_RESPONSES_ATTEMPTS] attempts, but only for failures where nothing
+     * has been generated yet: connect/DNS/TLS/reset, a stream that dropped before its
+     * first byte, and 408/429/5xx statuses. A request that already spent minutes
+     * streaming is never retried — that looks like "timed out repeatedly" and can
+     * double-bill.
      */
     private suspend fun executeResponses(
         apiKey: String,
         request: ResponsesRequest,
         debugMode: Boolean
     ): ResponsesCallResult {
-        var last: Exception? = null
-        repeat(2) { attempt ->
+        var attempt = 0
+        while (true) {
+            attempt++
             try {
                 return readResponses(apiKey, request, debugMode)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: HttpException) {
+                val canRetry = attempt < MAX_RESPONSES_ATTEMPTS && isRetryableHttpStatus(e.code())
+                if (!canRetry) throw e
+                val retryAfter = e.response()?.headers()?.get("Retry-After")
+                val wait = retryDelayMs(attempt, retryAfter)
+                logRetry(debugMode, attempt, wait, "HTTP ${e.code()} ${e.message()}")
+                delay(wait)
             } catch (e: Exception) {
-                if (attempt == 0 && isTransientConnectFailure(e)) {
-                    if (debugMode) {
-                        debugLogRepository.logIncoming(
-                            summary = "RETRY after connect failure",
-                            body = "${e.javaClass.simpleName}: ${e.message}"
-                        )
-                    }
-                    last = e
-                    delay(750)
-                } else {
-                    throw e
-                }
+                val transient = isTransientConnectFailure(e) || e is EarlyStreamFailure
+                if (attempt >= MAX_RESPONSES_ATTEMPTS || !transient) throw e
+                val wait = retryDelayMs(attempt)
+                logRetry(debugMode, attempt, wait, "${e.javaClass.simpleName}: ${e.message}")
+                delay(wait)
             }
         }
-        throw last ?: IllegalStateException("connect retry failed")
+    }
+
+    private fun logRetry(debugMode: Boolean, attempt: Int, waitMs: Long, reason: String) {
+        Log.w(TAG, "Attempt $attempt failed ($reason); retrying in ${waitMs}ms")
+        if (debugMode) {
+            debugLogRepository.logIncoming(
+                summary = "RETRY ${attempt + 1}/$MAX_RESPONSES_ATTEMPTS in ${waitMs}ms",
+                body = reason
+            )
+        }
+    }
+
+    /** Counts characters handed to the SSE parser so we know whether a drop was "early". */
+    private class CountingReader(private val delegate: Reader) : Reader() {
+        var charsRead: Long = 0
+            private set
+
+        override fun read(cbuf: CharArray, off: Int, len: Int): Int {
+            val n = delegate.read(cbuf, off, len)
+            if (n > 0) charsRead += n
+            return n
+        }
+
+        override fun close() = delegate.close()
     }
 
     private suspend fun readResponses(
@@ -408,7 +523,15 @@ class ChatRepository @Inject constructor(
                     usedWebSearch = false
                 )
             }
-            val parsed = ResponsesSseParser(gson).parse(rb.charStream())
+            val counting = CountingReader(rb.charStream())
+            val parsed = try {
+                ResponsesSseParser(gson).parse(counting)
+            } catch (e: IOException) {
+                if (counting.charsRead == 0L && isStreamInterruption(e)) {
+                    throw EarlyStreamFailure(e)
+                }
+                throw e
+            }
             if (parsed.errorMessage != null) {
                 throw RuntimeException(parsed.errorMessage)
             }

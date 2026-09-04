@@ -25,6 +25,24 @@ A lightweight native Android app for chatting with xAI's Grok models.
 - Debug mode with API request/response logs
 - Show estimated cost per query (optional)
 - **Streaming** Responses API (SSE) for chat + `web_search`, with HTTP/2 pings, so long reasoning/search does not hit “Timed out contacting api.x.ai”
+- **Network resilience** (see [Network resilience](#network-resilience)): DNS-over-HTTPS fallback when the network's resolver can't find `api.x.ai`, IPv4-first connects, short connect timeout with up to 3 attempts, and an instant “offline” message instead of a long stall
+- **Faster sends**: the TLS connection to `api.x.ai` is opened when the app starts / you begin typing, GPS waits at most 3 s at send time (falls back to the cached fix), and chat history sent as context is capped by size
+
+## Network resilience
+
+“Can't reach api.x.ai” on Android is almost always DNS or a dead route, not xAI being down. The app now handles the common cases itself:
+
+| Failure | What the app does |
+| --- | --- |
+| System DNS returns nothing (carrier/hotel Wi-Fi resolver, Private DNS misconfigured, VPN hijacking port 53) | Retries the lookup over **DNS-over-HTTPS** (Cloudflare `1.1.1.1`, then Google `8.8.8.8`, bootstrapped by IP so they work without port-53 DNS). If both fail, reuses the last address set that worked in this session |
+| IPv6 route advertised but blackholed (common on mobile data) | Resolved addresses are ordered **IPv4 first**; connect timeout is 12 s instead of 60 s so a dead address is skipped quickly |
+| Connect/TLS reset, HTTP/2 stream reset before any data, `408/429/5xx/529` | Up to **3 attempts** with 0.5 s → 1.5 s back-off (honours `Retry-After` up to 10 s). A reply that already started streaming is never retried, so nothing is double-billed |
+| No active network | Fails immediately with “No internet connection” — no 60 s hang |
+| Model id rejected | Falls back from Grok 4.6 to Grok 4.5 (unchanged) |
+
+Turn on **Debug mode** in Settings to see each retry (`RETRY 2/3 in 500ms …`) and the reason in the log screen.
+
+If it still fails: toggle Wi-Fi ↔ mobile data, check **Settings → Network → Private DNS** on the phone, or disable any VPN/ad-blocker that filters DNS.
 
 ## UK transit web sources
 
