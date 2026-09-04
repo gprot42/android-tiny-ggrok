@@ -110,13 +110,23 @@ class ChatRepository @Inject constructor(
         }
     }
 
-    /** Fast local check so an offline device gets an instant, honest error instead of a DNS stall. */
+    /**
+     * Fast local check so an offline device gets an instant, honest error instead of a
+     * DNS stall. Advisory only: any failure (missing ACCESS_NETWORK_STATE, OEM quirks,
+     * binder errors) returns true so the real request still runs — this must never
+     * be the reason a send crashes.
+     */
     private fun isNetworkAvailable(): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return true // can't tell — let the request try
-        val network = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return true // can't tell — let the request try
+            val network = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (e: Exception) {
+            Log.w(TAG, "Connectivity check unavailable (${e.javaClass.simpleName}); assuming online")
+            true
+        }
     }
 
     /**
