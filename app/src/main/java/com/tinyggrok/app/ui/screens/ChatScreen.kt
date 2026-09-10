@@ -224,10 +224,11 @@ fun ChatScreen(
     // but only if the user is already following the bottom of the list.
     LaunchedEffect(Unit) {
         snapshotFlow {
+            // Streamed length is included so the list follows the answer as it grows.
             Triple(
                 uiState.messages.size,
                 uiState.isSending,
-                uiState.messages.lastOrNull()?.id
+                uiState.streamingText.length
             )
         }
             .distinctUntilChanged()
@@ -393,7 +394,12 @@ fun ChatScreen(
                         }
                         if (uiState.isSending) {
                             item {
-                                TypingIndicator()
+                                StreamingReply(
+                                    status = uiState.streamingStatus,
+                                    text = uiState.streamingText,
+                                    responseFormat = uiState.responseFormat,
+                                    fontSize = uiState.fontSize
+                                )
                             }
                         }
                         // Sentinel: always the last item so scrollToItem(sentinelIndex) reaches
@@ -552,6 +558,50 @@ private fun AttachedImagesRow(
                 }
             }
         }
+    }
+}
+
+/**
+ * The in-flight reply: what the model is doing, then its words as they arrive.
+ *
+ * Rendered as plain text rather than the WebView used for finished answers. A WebView
+ * reloads on every content change, which would flash and re-measure many times a
+ * second; HTML tags are stripped so a half-written tag never shows.
+ */
+@Composable
+private fun StreamingReply(
+    status: String?,
+    text: String,
+    responseFormat: String,
+    fontSize: Float
+) {
+    if (text.isBlank()) {
+        Column {
+            status?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
+            TypingIndicator()
+        }
+        return
+    }
+
+    val preview = if (responseFormat == "markdown") text else htmlToPlainText(text)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "Grok",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            text = preview,
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = fontSize.sp),
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
 }
 

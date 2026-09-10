@@ -22,6 +22,19 @@ import java.io.Reader
  * that is the main reason streaming stops "Timed out contacting api.x.ai"
  * during long `web_search` / reasoning gaps.
  */
+/**
+ * Live progress from the stream. Without this the whole reply lands at once after
+ * the model has finished searching, reasoning and writing, so the UI can only show
+ * an undifferentiated spinner for the entire wait.
+ */
+internal interface ResponsesStreamListener {
+    /** The model started (or continued) a web search. */
+    fun onSearchStarted() {}
+
+    /** A chunk of answer text arrived. */
+    fun onDelta(text: String) {}
+}
+
 internal data class ParsedResponsesStream(
     val completed: ResponsesResponse? = null,
     val accumulatedText: String = "",
@@ -30,7 +43,10 @@ internal data class ParsedResponsesStream(
     val errorMessage: String? = null
 )
 
-internal class ResponsesSseParser(private val gson: Gson = Gson()) {
+internal class ResponsesSseParser(
+    private val gson: Gson = Gson(),
+    private val listener: ResponsesStreamListener? = null
+) {
 
     fun parse(reader: Reader): ParsedResponsesStream {
         val buffered = reader as? BufferedReader ?: BufferedReader(reader)
@@ -64,7 +80,10 @@ internal class ResponsesSseParser(private val gson: Gson = Gson()) {
                     if (payloadHasWebSearch(payload)) usedWebSearch = true
                 }
                 "response.output_text.delta", "response.text.delta" -> {
-                    obj.str("delta")?.let { text.append(it) }
+                    obj.str("delta")?.let {
+                        text.append(it)
+                        listener?.onDelta(it)
+                    }
                 }
                 "response.output_text.done", "response.text.done" -> {
                     // Prefer the finalized part text when no completed payload arrives.
@@ -78,10 +97,14 @@ internal class ResponsesSseParser(private val gson: Gson = Gson()) {
                 else -> {
                     if (type?.startsWith("response.web_search_call") == true) {
                         usedWebSearch = true
+                        listener?.onSearchStarted()
                     }
                     if (type == "response.output_item.added" || type == "response.output_item.done") {
                         val item = obj.obj("item")
-                        if (item?.str("type") == "web_search_call") usedWebSearch = true
+                        if (item?.str("type") == "web_search_call") {
+                            usedWebSearch = true
+                            listener?.onSearchStarted()
+                        }
                         collectCitations(item, citations)
                     }
                     // chat.completion.chunk fallback
@@ -91,7 +114,10 @@ internal class ResponsesSseParser(private val gson: Gson = Gson()) {
                         ?.asJsonObject
                         ?.obj("delta")
                         ?.str("content")
-                    if (!delta.isNullOrEmpty()) text.append(delta)
+                    if (!delta.isNullOrEmpty()) {
+                        text.append(delta)
+                        listener?.onDelta(delta)
+                    }
                     collectCitations(obj, citations)
                 }
             }

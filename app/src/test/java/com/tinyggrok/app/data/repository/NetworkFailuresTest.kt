@@ -88,6 +88,17 @@ class NetworkFailuresTest {
     }
 
     @Test
+    fun unsupportedTuningParametersAreDetected() {
+        assertTrue(isUnsupportedParameterFailure(400, """{"error":"Unknown field: max_turns"}"""))
+        assertTrue(isUnsupportedParameterFailure(400, "unsupported parameter: reasoning.effort"))
+        assertTrue(isUnsupportedParameterFailure(422, "invalid value for effort"))
+        // A rejection about the prompt itself must not strip our tuning fields.
+        assertFalse(isUnsupportedParameterFailure(400, "invalid temperature"))
+        assertFalse(isUnsupportedParameterFailure(400, """{"error":"model grok-4.6 not found"}"""))
+        assertFalse(isUnsupportedParameterFailure(429, "unknown reasoning field"))
+    }
+
+    @Test
     fun timeoutDetectionIncludesCallTimeout() {
         assertTrue(isTimeoutFailure(SocketTimeoutException("timeout")))
         assertTrue(isTimeoutFailure(InterruptedIOException("timeout")))

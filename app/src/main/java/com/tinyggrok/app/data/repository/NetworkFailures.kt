@@ -84,6 +84,30 @@ internal fun isUnknownModelFailure(code: Int, body: String): Boolean {
 }
 
 /**
+ * The API rejected a tuning parameter we added (reasoning effort / max turns) rather
+ * than the prompt itself. Safe to retry once with those fields stripped, so an API
+ * change can never make chat unusable.
+ */
+internal fun isUnsupportedParameterFailure(code: Int, body: String): Boolean {
+    if (code != 400 && code != 422) return false
+    val lower = body.lowercase()
+    val mentionsOurFields = listOf("reasoning", "max_turns", "maxturns", "effort")
+        .any { it in lower }
+    if (!mentionsOurFields) return false
+    return listOf(
+        "unknown",
+        "unsupported",
+        "not supported",
+        "unrecognized",
+        "unrecognised",
+        "unexpected",
+        "not allowed",
+        "not permitted",
+        "invalid"
+    ).any { it in lower }
+}
+
+/**
  * HTTP statuses that are worth retrying with a short back-off. These are returned
  * before any tokens are generated, so a retry cannot double-bill.
  */

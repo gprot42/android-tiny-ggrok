@@ -8,6 +8,7 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonElement
 import com.tinyggrok.app.AppDefaults
 import com.tinyggrok.app.data.api.ResponsesSseParser
+import com.tinyggrok.app.data.api.ResponsesStreamListener
 import com.tinyggrok.app.data.api.XaiApiService
 import com.tinyggrok.app.data.model.InputContent
 import com.tinyggrok.app.data.model.InputMessage
@@ -15,6 +16,7 @@ import com.tinyggrok.app.data.model.Message
 import com.tinyggrok.app.data.model.ResponseTool
 import com.tinyggrok.app.data.model.ResponsesRequest
 import com.tinyggrok.app.data.model.ResponsesResponse
+import com.tinyggrok.app.data.model.ReasoningConfig
 import com.tinyggrok.app.data.model.TextContent
 import com.tinyggrok.app.data.model.Usage
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -48,6 +50,22 @@ private const val WARMUP_INTERVAL_MS = 4 * 60 * 1_000L
  */
 internal class EarlyStreamFailure(cause: Throwable) :
     IOException("Stream dropped before any data arrived: ${cause.message}", cause)
+
+/**
+ * Live progress while a reply is being produced. The request already streams; without
+ * surfacing it the user watches a motionless indicator through search, reasoning and
+ * generation, then everything appears at once.
+ */
+sealed class ChatProgress {
+    /** A web search turn started. */
+    object Searching : ChatProgress()
+
+    /** A chunk of answer text arrived. */
+    data class Delta(val text: String) : ChatProgress()
+
+    /** The attempt was abandoned and restarted; discard anything shown so far. */
+    object Restarted : ChatProgress()
+}
 
 data class ChatResult(
     val assistantMessage: String,
@@ -174,7 +192,9 @@ class ChatRepository @Inject constructor(
         responseFormat: String = "html",
         model: String = AppDefaults.DEFAULT_MODEL,
         /** Optional approximate location snippet already formatted for instructions. */
-        locationContext: String? = null
+        locationContext: String? = null,
+        /** Called as the reply streams in, off the main thread. */
+        onProgress: ((ChatProgress) -> Unit)? = null
     ): Result<ChatResult> {
         if (!isNetworkAvailable()) {
             if (debugMode) {
@@ -217,9 +237,11 @@ class ChatRepository @Inject constructor(
                         "\"site:nationalrail.co.uk live departures <station>\", " +
                         "\"site:nationalrail.co.uk journey planner <from> to <to>\", " +
                         "\"site:realtime.nationalrail.co.uk <station>\".\n" +
-                        "3. Open/browse National Rail journey planner or live departure board results when " +
-                        "search returns them; quote times from those pages.\n" +
-                        "4. Then search operator sites if needed (Thameslink, TfL, London Northwestern, etc.).\n" +
+                        "3. Open a National Rail journey planner or live departure board result only " +
+                        "when the search results do not already contain the times you need; quote times " +
+                        "from whatever you open.\n" +
+                        "4. Stop as soon as you can answer. Search operator sites (Thameslink, TfL, " +
+                        "London Northwestern, etc.) only if National Rail did not cover it.\n" +
                         "5. Always include clickable source URLs (especially nationalrail.co.uk) in the answer. " +
                         "If web_search cannot retrieve live boards, say so clearly and still give the " +
                         "National Rail links the user can open.\n"
@@ -310,6 +332,19 @@ class ChatRepository @Inject constructor(
                 tools = listOf(ResponseTool(type = "web_search")),
                 // Slightly lower temperature for timetable / factual transit answers
                 temperature = if (transitEnquiry) 0.3 else 0.7,
+                // Thinking time dominates wall clock: the API defaults to "high", which
+                // spends tens of seconds before the first token. Ordinary questions do
+                // not need it; rail answers combine several sources and timetable
+                // arithmetic, so they keep the full budget.
+                reasoning = ReasoningConfig(
+                    effort = if (transitEnquiry) AppDefaults.EFFORT_HIGH else AppDefaults.EFFORT_LOW
+                ),
+                // Stop the model looping through search after search on a vague question.
+                maxTurns = if (transitEnquiry) {
+                    AppDefaults.MAX_TURNS_TRANSIT
+                } else {
+                    AppDefaults.MAX_TURNS_DEFAULT
+                },
                 // Streaming is required for agent tools: web_search/reasoning can sit
                 // silent for minutes; SSE events (and HTTP/2 pings) keep the socket alive.
                 stream = true
@@ -328,10 +363,25 @@ class ChatRepository @Inject constructor(
             }
 
             val call = try {
-                executeResponses(apiKey, request, debugMode)
+                executeResponses(apiKey, request, debugMode, onProgress)
             } catch (e: HttpException) {
                 val body = try { e.response()?.errorBody()?.string().orEmpty() } catch (_: Throwable) { "" }
-                if (request.model != AppDefaults.BACKUP_MODEL &&
+                if ((request.reasoning != null || request.maxTurns != null) &&
+                    isUnsupportedParameterFailure(e.code(), body)
+                ) {
+                    // The API rejected a tuning field, not the prompt. Retry plainly so a
+                    // server-side change can never take chat down.
+                    Log.w(TAG, "Tuning parameters rejected (HTTP ${e.code()}); retrying without them")
+                    if (debugMode) {
+                        debugLogRepository.logIncoming(
+                            summary = "RETRY without reasoning/max_turns",
+                            body = body.take(500)
+                        )
+                    }
+                    onProgress?.invoke(ChatProgress.Restarted)
+                    request = request.copy(reasoning = null, maxTurns = null)
+                    executeResponses(apiKey, request, debugMode, onProgress)
+                } else if (request.model != AppDefaults.BACKUP_MODEL &&
                     isUnknownModelFailure(e.code(), body)
                 ) {
                     if (debugMode) {
@@ -340,8 +390,9 @@ class ChatRepository @Inject constructor(
                             body = body.take(500)
                         )
                     }
+                    onProgress?.invoke(ChatProgress.Restarted)
                     request = request.copy(model = AppDefaults.BACKUP_MODEL)
-                    executeResponses(apiKey, request, debugMode)
+                    executeResponses(apiKey, request, debugMode, onProgress)
                 } else {
                     Log.e(TAG, "HTTP ERROR ${e.code()}: ${body.take(2000)}")
                     if (debugMode) {
@@ -450,13 +501,14 @@ class ChatRepository @Inject constructor(
     private suspend fun executeResponses(
         apiKey: String,
         request: ResponsesRequest,
-        debugMode: Boolean
+        debugMode: Boolean,
+        onProgress: ((ChatProgress) -> Unit)? = null
     ): ResponsesCallResult {
         var attempt = 0
         while (true) {
             attempt++
             try {
-                return readResponses(apiKey, request, debugMode)
+                return readResponses(apiKey, request, debugMode, onProgress)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: HttpException) {
@@ -465,12 +517,14 @@ class ChatRepository @Inject constructor(
                 val retryAfter = e.response()?.headers()?.get("Retry-After")
                 val wait = retryDelayMs(attempt, retryAfter)
                 logRetry(debugMode, attempt, wait, "HTTP ${e.code()} ${e.message()}")
+                onProgress?.invoke(ChatProgress.Restarted)
                 delay(wait)
             } catch (e: Exception) {
                 val transient = isTransientConnectFailure(e) || e is EarlyStreamFailure
                 if (attempt >= MAX_RESPONSES_ATTEMPTS || !transient) throw e
                 val wait = retryDelayMs(attempt)
                 logRetry(debugMode, attempt, wait, "${e.javaClass.simpleName}: ${e.message}")
+                onProgress?.invoke(ChatProgress.Restarted)
                 delay(wait)
             }
         }
@@ -503,7 +557,8 @@ class ChatRepository @Inject constructor(
     private suspend fun readResponses(
         apiKey: String,
         request: ResponsesRequest,
-        debugMode: Boolean
+        debugMode: Boolean,
+        onProgress: ((ChatProgress) -> Unit)? = null
     ): ResponsesCallResult = withContext(Dispatchers.IO) {
         val http = apiService.responsesStream(
             auth = "Bearer $apiKey",
@@ -534,8 +589,14 @@ class ChatRepository @Inject constructor(
                 )
             }
             val counting = CountingReader(rb.charStream())
+            val listener = onProgress?.let { emit ->
+                object : ResponsesStreamListener {
+                    override fun onSearchStarted() = emit(ChatProgress.Searching)
+                    override fun onDelta(text: String) = emit(ChatProgress.Delta(text))
+                }
+            }
             val parsed = try {
-                ResponsesSseParser(gson).parse(counting)
+                ResponsesSseParser(gson, listener).parse(counting)
             } catch (e: IOException) {
                 if (counting.charsRead == 0L && isStreamInterruption(e)) {
                     throw EarlyStreamFailure(e)

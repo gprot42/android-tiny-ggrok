@@ -34,6 +34,41 @@ class ResponsesSseParserTest {
     }
 
     @Test
+    fun listenerReceivesSearchAndTextAsTheyArrive() {
+        val deltas = mutableListOf<String>()
+        var searches = 0
+        val listener = object : ResponsesStreamListener {
+            override fun onSearchStarted() { searches++ }
+            override fun onDelta(text: String) { deltas += text }
+        }
+        val sse = """
+            data: {"type":"response.web_search_call.in_progress"}
+
+            data: {"type":"response.web_search_call.completed"}
+
+            data: {"type":"response.output_text.delta","delta":"Trains "}
+
+            data: {"type":"response.output_text.delta","delta":"run hourly."}
+
+            data: [DONE]
+
+        """.trimIndent()
+
+        val parsed = ResponsesSseParser(listener = listener).parse(StringReader(sse))
+
+        assertEquals(listOf("Trains ", "run hourly."), deltas)
+        assertEquals(2, searches)
+        assertTrue(parsed.usedWebSearch)
+        assertEquals("Trains run hourly.", parsed.accumulatedText)
+    }
+
+    @Test
+    fun listenerIsOptional() {
+        val sse = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
+        assertEquals("hi", ResponsesSseParser().parse(StringReader(sse)).accumulatedText)
+    }
+
+    @Test
     fun failedEventSurfacesMessage() {
         val sse = """
             data: {"type":"response.failed","response":{"error":{"message":"tool exploded"}}}

@@ -27,6 +27,8 @@ A lightweight native Android app for chatting with xAI's Grok models.
 - **Streaming** Responses API (SSE) for chat + `web_search`, with HTTP/2 pings, so long reasoning/search does not hit “Timed out contacting api.x.ai”
 - **Network resilience** (see [Network resilience](#network-resilience)): DNS-over-HTTPS fallback when the network's resolver can't find `api.x.ai`, IPv4-first connects, short connect timeout with up to 3 attempts, and an instant “offline” message instead of a long stall
 - **Faster sends**: the TLS connection to `api.x.ai` is opened when the app starts / you begin typing, GPS waits at most 3 s at send time (falls back to the cached fix), and chat history sent as context is capped by size
+- **Live replies**: the answer streams onto the screen as Grok writes it, with a **Searching the web** status while it looks things up, instead of a motionless indicator until the whole reply lands
+- **Reasoning effort tuned per question**: ordinary questions use `low` effort (the API default is `high`, which spends tens of seconds thinking before the first token); rail/transit questions keep `high`. Agentic tool turns are capped so a vague question cannot loop through searches indefinitely
 
 ## Network resilience
 

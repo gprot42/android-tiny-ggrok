@@ -12,6 +12,7 @@ import com.tinyggrok.app.data.local.LocationRepository
 import com.tinyggrok.app.data.local.SettingsRepository
 import com.tinyggrok.app.data.model.Message
 import com.tinyggrok.app.data.model.TextContent
+import com.tinyggrok.app.data.repository.ChatProgress
 import com.tinyggrok.app.data.repository.ChatRepository
 import com.tinyggrok.app.data.repository.DebugLogRepository
 import com.tinyggrok.app.data.repository.ResolvedAuth
@@ -35,6 +36,9 @@ private const val MAX_IMAGE_DIMENSION = 1024
 /** JPEG quality for base64 encoding */
 private const val JPEG_QUALITY = 85
 
+/** Status shown while the model is running a web search. */
+internal const val SEARCH_STATUS = "Searching the web\u2026"
+
 /** Max images the user can attach to a single prompt (API / payload safety). */
 const val MAX_ATTACHED_IMAGES = 10
 
@@ -55,6 +59,12 @@ internal const val MAX_HISTORY_CHARS = 24_000
  * coordinates rather than holding the whole query for the 25 s GPS session.
  */
 internal const val SEND_LOCATION_WAIT_MS = 3_000L
+
+/**
+ * Smallest gap between UI updates while text streams in. Repainting on every token
+ * would recompose dozens of times a second for no visible benefit.
+ */
+private const val STREAM_UI_INTERVAL_MS = 80L
 
 /**
  * Trim [messages] to the last [maxAssistantTurns] assistant replies (plus their user
@@ -150,6 +160,10 @@ data class ChatUiState(
     val fontSize: Float = 14f,
     val chatModel: String = AppDefaults.DEFAULT_MODEL,
     val lastSentPrompt: String = "",
+    /** Answer text received so far on the in-flight reply (empty until the model writes). */
+    val streamingText: String = "",
+    /** What the model is doing right now, e.g. searching the web. */
+    val streamingStatus: String? = null,
     /** When true, chat attaches approximate GPS (if OS permission granted). */
     val locationEnabled: Boolean = true
 ) {
@@ -371,7 +385,9 @@ class ChatViewModel @Inject constructor(
                 attachedImages = emptyList(),
                 isSending = true,
                 errorMessage = null,
-                lastSentPrompt = prompt
+                lastSentPrompt = prompt,
+                streamingText = "",
+                streamingStatus = "Thinking\u2026"
             )
 
             // Recent turns only, within a character budget (see trimHistory).
@@ -379,6 +395,10 @@ class ChatViewModel @Inject constructor(
                 .map { msg -> Message(role = msg.role, text = msg.content) }
 
             val locationContext = locationDeferred.await()
+
+            // Progress arrives on a network thread; StateFlow assignment is safe there.
+            val streamed = StringBuilder()
+            var lastUiUpdate = 0L
 
             val result = chatRepository.sendMessage(
                 apiKey = apiKey,
@@ -388,7 +408,35 @@ class ChatViewModel @Inject constructor(
                 debugMode = debugMode,
                 responseFormat = _uiState.value.responseFormat,
                 model = chatModel,
-                locationContext = locationContext
+                locationContext = locationContext,
+                onProgress = { progress ->
+                    when (progress) {
+                        is ChatProgress.Searching -> {
+                            if (_uiState.value.streamingStatus != SEARCH_STATUS) {
+                                _uiState.value = _uiState.value.copy(streamingStatus = SEARCH_STATUS)
+                            }
+                        }
+                        is ChatProgress.Restarted -> {
+                            streamed.setLength(0)
+                            lastUiUpdate = 0L
+                            _uiState.value = _uiState.value.copy(
+                                streamingText = "",
+                                streamingStatus = "Retrying\u2026"
+                            )
+                        }
+                        is ChatProgress.Delta -> {
+                            streamed.append(progress.text)
+                            val now = System.currentTimeMillis()
+                            if (now - lastUiUpdate >= STREAM_UI_INTERVAL_MS) {
+                                lastUiUpdate = now
+                                _uiState.value = _uiState.value.copy(
+                                    streamingText = streamed.toString(),
+                                    streamingStatus = null
+                                )
+                            }
+                        }
+                    }
+                }
             )
             _uiState.value = result.fold(
                 onSuccess = { response ->
@@ -416,12 +464,16 @@ class ChatViewModel @Inject constructor(
                             usedWebSearch = response.usedWebSearch,
                             citations = response.citations
                         ),
-                        isSending = false
+                        isSending = false,
+                        streamingText = "",
+                        streamingStatus = null
                     )
                 },
                 onFailure = { error ->
                     _uiState.value.copy(
                         isSending = false,
+                        streamingText = "",
+                        streamingStatus = null,
                         errorMessage = error.message ?: "Unable to send prompt."
                     )
                 }

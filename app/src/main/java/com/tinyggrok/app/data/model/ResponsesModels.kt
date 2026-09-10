@@ -21,7 +21,24 @@ data class ResponsesRequest(
     val maxOutputTokens: Int = 4096,
     val temperature: Double = 0.7,
     val stream: Boolean = false,
-    val store: Boolean = false
+    val store: Boolean = false,
+    /**
+     * How long the model thinks before answering. Grok defaults to "high", which is
+     * the single largest slice of wall-clock time on an ordinary question. Null omits
+     * the field so the server default applies.
+     */
+    val reasoning: ReasoningConfig? = null,
+    /**
+     * Ceiling on server-side agentic tool turns (each search or page fetch is a turn).
+     * Bounds the runaway case where the model keeps searching; null means no limit.
+     */
+    @SerializedName("max_turns")
+    val maxTurns: Int? = null
+)
+
+/** Reasoning effort for [ResponsesRequest]. See [AppDefaults.EFFORT_LOW] and friends. */
+data class ReasoningConfig(
+    val effort: String
 )
 
 /**
