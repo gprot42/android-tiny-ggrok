@@ -97,17 +97,34 @@ data class AttachedImage(
     val base64: String
 )
 
+/** Message text used when a prompt carries only images and no typed words. */
+internal fun imageOnlyPlaceholder(count: Int): String =
+    if (count == 1) "[Image]" else "[$count images]"
+
 data class ChatUiMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
     val role: String,
     val content: String,
     val costInfo: CostInfo? = null,
-    val imageCount: Int = 0,
+    /**
+     * Where the images sent with this prompt live. Kept so the transcript can show the
+     * pictures themselves instead of a placeholder icon. Locations are stored rather
+     * than the base64 copies: ten resized photos would be several MB of state per
+     * message, while the loader can decode and cache from the location for free.
+     * These stay readable for the life of the process, which is exactly how long the
+     * in-memory chat history lives.
+     */
+    val imageUris: List<Uri> = emptyList(),
     val model: String? = null,
     val usedWebSearch: Boolean = false,
     val citations: List<String> = emptyList()
 ) {
+    val imageCount: Int get() = imageUris.size
     val hasImage: Boolean get() = imageCount > 0
+
+    /** Images with no typed words: the bubble shows the pictures, not the placeholder. */
+    val isImageOnly: Boolean
+        get() = hasImage && content == imageOnlyPlaceholder(imageCount)
 }
 
 data class CostInfo(
@@ -302,7 +319,8 @@ class ChatViewModel @Inject constructor(
 
     fun sendPrompt() {
         val prompt = _uiState.value.prompt.trim()
-        val imageBase64List = _uiState.value.attachedImages.map { it.base64 }
+        val attachedImages = _uiState.value.attachedImages
+        val imageBase64List = attachedImages.map { it.base64 }
 
         if ((prompt.isEmpty() && imageBase64List.isEmpty()) || _uiState.value.isSending) {
             return
@@ -336,15 +354,15 @@ class ChatViewModel @Inject constructor(
             val debugMode = settingsRepository.debugMode.first()
             val chatModel = settingsRepository.chatModel.first()
             val previousMessages = _uiState.value.messages
-            val displayText = when {
-                prompt.isNotEmpty() -> prompt
-                imageBase64List.size == 1 -> "[Image]"
-                else -> "[${imageBase64List.size} images]"
+            val displayText = if (prompt.isNotEmpty()) {
+                prompt
+            } else {
+                imageOnlyPlaceholder(imageBase64List.size)
             }
             val optimisticMessages = previousMessages + ChatUiMessage(
                 role = "user",
                 content = displayText,
-                imageCount = imageBase64List.size
+                imageUris = attachedImages.map { it.uri }
             )
 
             _uiState.value = _uiState.value.copy(

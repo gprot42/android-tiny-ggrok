@@ -42,3 +42,19 @@ class TrimHistoryTest {
         assertTrue(trimHistory(emptyList()).isEmpty())
     }
 }
+
+class ImagePlaceholderTest {
+
+    @Test
+    fun placeholderTextMatchesCount() {
+        assertEquals("[Image]", imageOnlyPlaceholder(1))
+        assertEquals("[3 images]", imageOnlyPlaceholder(3))
+    }
+
+    @Test
+    fun typedPromptIsNotImageOnly() {
+        val msg = ChatUiMessage(role = "user", content = "what is this?")
+        assertTrue(!msg.isImageOnly)
+        assertEquals(0, msg.imageCount)
+    }
+}

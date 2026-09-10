@@ -22,12 +22,16 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +49,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -68,6 +73,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -79,8 +85,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -95,6 +103,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.tinyggrok.app.data.share.formatConversationForShare
@@ -627,6 +637,13 @@ private fun MessageItem(
 ) {
     val clipboard = LocalClipboardManager.current
     val isAssistant = message.role == "assistant"
+    // Full-screen viewer for one of this message's images. A Dialog, so it sits above
+    // the chat and is unaffected by the screen's pinch-zoom transform.
+    var viewerUri by remember(message.id) { mutableStateOf<Uri?>(null) }
+
+    viewerUri?.let { uri ->
+        ImageViewerDialog(uri = uri, onDismiss = { viewerUri = null })
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -691,26 +708,10 @@ private fun MessageItem(
             }
         }
         if (message.hasImage && !isAssistant) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Outlined.Image,
-                    contentDescription = if (message.imageCount == 1) {
-                        "Image attached"
-                    } else {
-                        "${message.imageCount} images attached"
-                    },
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                if (message.imageCount > 1) {
-                    Text(
-                        text = "×${message.imageCount}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(start = 2.dp)
-                    )
-                }
-            }
+            SentImagesRow(
+                uris = message.imageUris,
+                onOpen = { viewerUri = it }
+            )
         }
         if (isAssistant) {
             val htmlContent = if (responseFormat == "markdown") {
@@ -725,7 +726,7 @@ private fun MessageItem(
                 onHeightMeasured = onWebViewHeight
             )
             SourcesList(urls = message.citations)
-        } else {
+        } else if (!message.isImageOnly || message.imageUris.isEmpty()) {
             // Compose Text layouts the full string on the main thread. Cap display so a
             // huge paste cannot ANR the same way debug-log bodies used to.
             val display = if (message.content.length > 20_000) {
@@ -745,6 +746,115 @@ private fun MessageItem(
                 color = MaterialTheme.colorScheme.outline,
                 modifier = Modifier.padding(top = 4.dp)
             )
+        }
+    }
+}
+
+/**
+ * Thumbnails of the images sent with a prompt, so they stay visible in the transcript
+ * instead of collapsing to a placeholder icon once the composer strip is cleared.
+ */
+@Composable
+private fun SentImagesRow(
+    uris: List<Uri>,
+    onOpen: (Uri) -> Unit
+) {
+    if (uris.isEmpty()) return
+
+    val fallback = rememberVectorPainter(Icons.Outlined.Image)
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 2.dp)
+    ) {
+        itemsIndexed(uris) { index, uri ->
+            Card(shape = RoundedCornerShape(8.dp)) {
+                AsyncImage(
+                    model = uri,
+                    contentDescription = if (uris.size == 1) {
+                        "Attached image, tap to view"
+                    } else {
+                        "Attached image ${index + 1} of ${uris.size}, tap to view"
+                    },
+                    contentScale = ContentScale.Crop,
+                    error = fallback,
+                    fallback = fallback,
+                    modifier = Modifier
+                        .size(88.dp)
+                        .clickable { onOpen(uri) }
+                )
+            }
+        }
+    }
+}
+
+/** Full-screen image viewer: pinch to zoom, drag to pan, tap to close. */
+@Composable
+private fun ImageViewerDialog(uri: Uri, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        var scale by remember { mutableFloatStateOf(1f) }
+        var offset by remember { mutableStateOf(Offset.Zero) }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.94f))
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val newScale = (scale * zoom).coerceIn(1f, 6f)
+                        scale = newScale
+                        // Panning only means anything while zoomed in.
+                        offset = if (newScale <= 1f) Offset.Zero else offset + pan
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            // Tapping while zoomed would close by accident; reset instead.
+                            if (scale > 1f) {
+                                scale = 1f
+                                offset = Offset.Zero
+                            } else {
+                                onDismiss()
+                            }
+                        }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            val fallback = rememberVectorPainter(Icons.Outlined.Image)
+            AsyncImage(
+                model = uri,
+                contentDescription = "Attached image",
+                contentScale = ContentScale.Fit,
+                error = fallback,
+                fallback = fallback,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    }
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close image",
+                    tint = Color.White
+                )
+            }
         }
     }
 }
