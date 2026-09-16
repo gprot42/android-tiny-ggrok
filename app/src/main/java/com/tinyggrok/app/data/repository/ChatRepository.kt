@@ -22,6 +22,7 @@ import com.tinyggrok.app.data.model.Usage
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -568,6 +569,13 @@ class ChatRepository @Inject constructor(
             throw HttpException(http)
         }
         val body = http.body() ?: throw IllegalStateException("Empty body from api.x.ai")
+        // Reading the SSE stream is a blocking call, so coroutine cancellation alone
+        // cannot interrupt it: a stopped reply would keep reading until the server
+        // closed. Closing the body from the cancelling thread ends the read at once.
+        val closeOnCancel = coroutineContext[Job]?.invokeOnCompletion { cause ->
+            if (cause != null) runCatching { body.close() }
+        }
+        try {
         body.use { rb ->
             val contentType = rb.contentType()?.toString().orEmpty()
                 .ifBlank { http.headers()["Content-Type"].orEmpty() }
@@ -615,6 +623,9 @@ class ChatRepository @Inject constructor(
                 citations = parsed.citations,
                 usedWebSearch = parsed.usedWebSearch
             )
+        }
+        } finally {
+            closeOnCancel?.dispose()
         }
     }
 

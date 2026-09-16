@@ -1,6 +1,7 @@
 package com.tinyggrok.app.ui.viewmodel
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -56,5 +57,25 @@ class ImagePlaceholderTest {
         val msg = ChatUiMessage(role = "user", content = "what is this?")
         assertTrue(!msg.isImageOnly)
         assertEquals(0, msg.imageCount)
+    }
+}
+
+class SendStateTest {
+
+    @Test
+    fun sendIsOfferedWheneverThereIsSomethingToSend() {
+        // Regression: Send used to be disabled for the whole time a reply was in
+        // flight, while the composer invited drafting the next prompt.
+        val waiting = ChatUiState(prompt = "next question", isSending = true)
+        assertTrue(waiting.canSend)
+
+        val idle = ChatUiState(prompt = "a question")
+        assertTrue(idle.canSend)
+    }
+
+    @Test
+    fun nothingToSendMeansNoSend() {
+        assertFalse(ChatUiState().canSend)
+        assertFalse(ChatUiState(prompt = "   ").canSend)
     }
 }

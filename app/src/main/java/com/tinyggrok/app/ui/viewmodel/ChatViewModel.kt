@@ -22,6 +22,7 @@ import com.tinyggrok.app.data.share.IncomingShare
 import com.tinyggrok.app.data.share.IncomingShareRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -107,6 +108,15 @@ data class AttachedImage(
     val base64: String
 )
 
+/**
+ * A prompt typed while a reply was still arriving. The composer invites drafting the
+ * next prompt, so Send holds it here and fires it once the current reply lands.
+ */
+data class QueuedPrompt(
+    val text: String,
+    val images: List<AttachedImage>
+)
+
 /** Message text used when a prompt carries only images and no typed words. */
 internal fun imageOnlyPlaceholder(count: Int): String =
     if (count == 1) "[Image]" else "[$count images]"
@@ -165,9 +175,14 @@ data class ChatUiState(
     /** What the model is doing right now, e.g. searching the web. */
     val streamingStatus: String? = null,
     /** When true, chat attaches approximate GPS (if OS permission granted). */
-    val locationEnabled: Boolean = true
+    val locationEnabled: Boolean = true,
+    /** Prompt typed while a reply was in flight; sent automatically when it lands. */
+    val queuedPrompt: QueuedPrompt? = null
 ) {
     val hasAttachedImages: Boolean get() = attachedImages.isNotEmpty()
+
+    /** Send is offered whenever there is something to send, in flight or not. */
+    val canSend: Boolean get() = prompt.isNotBlank() || hasAttachedImages
 }
 
 @HiltViewModel
@@ -183,6 +198,9 @@ class ChatViewModel @Inject constructor(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState
+
+    /** The in-flight reply, so it can be stopped instead of locking the composer. */
+    private var sendJob: Job? = null
 
     init {
         // Open the TLS connection to api.x.ai now so the first send doesn't pay for it.
@@ -336,11 +354,21 @@ class ChatViewModel @Inject constructor(
         val attachedImages = _uiState.value.attachedImages
         val imageBase64List = attachedImages.map { it.base64 }
 
-        if ((prompt.isEmpty() && imageBase64List.isEmpty()) || _uiState.value.isSending) {
+        if (prompt.isEmpty() && imageBase64List.isEmpty()) return
+
+        // A reply is still arriving: hold this one instead of refusing it. The composer
+        // says "next prompt", so Send has to mean something while waiting.
+        if (_uiState.value.isSending) {
+            _uiState.value = _uiState.value.copy(
+                queuedPrompt = QueuedPrompt(text = prompt, images = attachedImages),
+                prompt = "",
+                attachedImages = emptyList(),
+                errorMessage = null
+            )
             return
         }
 
-        viewModelScope.launch {
+        sendJob = viewModelScope.launch {
             // Kick off the (possibly slow) GPS lookup immediately so it overlaps with
             // auth resolution and settings reads instead of running after them.
             val locationDeferred = async {
@@ -478,17 +506,84 @@ class ChatViewModel @Inject constructor(
                     )
                 }
             )
+
+            if (result.isSuccess) {
+                sendQueuedPrompt()
+            } else {
+                // Don't fire a queued prompt straight into the same failure; hand it
+                // back to the composer so the user decides.
+                restoreQueuedPromptToComposer()
+            }
         }
+    }
+
+    /**
+     * Stop the reply that is arriving. Leaves the conversation as it stands and frees
+     * the composer immediately, instead of waiting out the 30-minute call timeout.
+     */
+    fun cancelSend() {
+        val job = sendJob
+        sendJob = null
+        job?.cancel()
+        _uiState.value = _uiState.value.copy(
+            isSending = false,
+            streamingText = "",
+            streamingStatus = null
+        )
+        restoreQueuedPromptToComposer()
+    }
+
+    /** Send whatever was queued while the last reply was arriving. */
+    private fun sendQueuedPrompt() {
+        val queued = _uiState.value.queuedPrompt ?: return
+        _uiState.value = _uiState.value.copy(
+            queuedPrompt = null,
+            prompt = queued.text,
+            attachedImages = queued.images
+        )
+        sendPrompt()
+    }
+
+    /** Put a queued prompt back in the composer without sending it. */
+    private fun restoreQueuedPromptToComposer() {
+        val queued = _uiState.value.queuedPrompt ?: return
+        val current = _uiState.value
+        _uiState.value = current.copy(
+            queuedPrompt = null,
+            // Never clobber something the user has since typed.
+            prompt = if (current.prompt.isBlank()) queued.text else current.prompt,
+            attachedImages = if (current.attachedImages.isEmpty()) {
+                queued.images
+            } else {
+                current.attachedImages
+            }
+        )
+    }
+
+    /** Drop a queued prompt entirely (user dismissed it). */
+    fun clearQueuedPrompt() {
+        _uiState.value = _uiState.value.copy(queuedPrompt = null)
     }
 
     fun clearDebugLogs() {
         debugLogRepository.clear()
     }
 
+    /**
+     * Clear the conversation. Also stops anything in flight: leaving [isSending] set
+     * here left an empty screen with a dead Send button and no way back.
+     */
     fun clearMessages() {
+        val job = sendJob
+        sendJob = null
+        job?.cancel()
         _uiState.value = _uiState.value.copy(
             messages = emptyList(),
-            errorMessage = null
+            errorMessage = null,
+            isSending = false,
+            streamingText = "",
+            streamingStatus = null,
+            queuedPrompt = null
         )
     }
 

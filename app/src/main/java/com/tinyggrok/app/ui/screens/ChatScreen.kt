@@ -100,6 +100,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.rememberNestedScrollInteropConnection
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -114,6 +115,7 @@ import com.tinyggrok.app.ui.viewmodel.AttachedImage
 import com.tinyggrok.app.ui.viewmodel.ChatUiMessage
 import com.tinyggrok.app.ui.viewmodel.ChatViewModel
 import com.tinyggrok.app.ui.viewmodel.MAX_ATTACHED_IMAGES
+import com.tinyggrok.app.ui.viewmodel.QueuedPrompt
 import kotlin.math.ceil
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -237,11 +239,18 @@ fun ChatScreen(
                 // Sending always re-engages follow mode (user just submitted a prompt).
                 if (isSending) stickToBottom = true
                 if (!stickToBottom) return@collect
-                val sentinelIndex = size + (if (isSending) 1 else 0)
+                // While the reply is still only a status line, pin that line itself.
+                // Jumping to the bottom sentinel can leave it above the viewport, which
+                // reads as a conversation that has gone blank.
+                val target = if (isSending && uiState.streamingText.isBlank()) {
+                    size
+                } else {
+                    size + (if (isSending) 1 else 0)
+                }
                 // Instant jump: animateScrollToItem fights WebView height growth and
                 // feels more jarring when a tall answer lands.
                 delay(16)
-                listState.scrollToItem(sentinelIndex)
+                listState.scrollToItem(target)
                 stickToBottom = true
             }
     }
@@ -416,6 +425,13 @@ fun ChatScreen(
                 )
             }
 
+            uiState.queuedPrompt?.let { queued ->
+                QueuedPromptRow(
+                    queued = queued,
+                    onCancel = viewModel::clearQueuedPrompt
+                )
+            }
+
             // Multi-image attachment previews
             if (uiState.attachedImages.isNotEmpty()) {
                 AttachedImagesRow(
@@ -431,7 +447,13 @@ fun ChatScreen(
                 onValueChange = viewModel::updatePrompt,
                 modifier = Modifier.fillMaxWidth(),
                 label = {
-                    Text(if (uiState.isSending) "Next prompt (waiting for reply…)" else "Prompt")
+                    Text(
+                        when {
+                            uiState.queuedPrompt != null -> "Next prompt (1 queued)"
+                            uiState.isSending -> "Next prompt (send to queue it)"
+                            else -> "Prompt"
+                        }
+                    )
                 },
                 minLines = 2,
                 maxLines = 4,
@@ -483,17 +505,25 @@ fun ChatScreen(
                     ) {
                         Text("Copy")
                     }
-                    TextButton(
-                        onClick = {
-                            val last = uiState.lastSentPrompt
-                            if (last.isNotBlank() && !uiState.isSending) {
-                                viewModel.updatePrompt(last)
-                                sendWithOptionalLocationPermission()
-                            }
-                        },
-                        enabled = uiState.lastSentPrompt.isNotBlank() && !uiState.isSending
-                    ) {
-                        Text("Resend")
+                    if (uiState.isSending) {
+                        // Resend is meaningless mid-reply, and without a way to stop,
+                        // a slow request locked the composer until the call timed out.
+                        TextButton(onClick = viewModel::cancelSend) {
+                            Text("Stop")
+                        }
+                    } else {
+                        TextButton(
+                            onClick = {
+                                val last = uiState.lastSentPrompt
+                                if (last.isNotBlank()) {
+                                    viewModel.updatePrompt(last)
+                                    sendWithOptionalLocationPermission()
+                                }
+                            },
+                            enabled = uiState.lastSentPrompt.isNotBlank()
+                        ) {
+                            Text("Resend")
+                        }
                     }
                     TextButton(
                         onClick = viewModel::clearPrompt,
@@ -504,13 +534,41 @@ fun ChatScreen(
                     Button(
                         onClick = { sendWithOptionalLocationPermission() },
                         modifier = Modifier.padding(start = 8.dp),
-                        enabled = (uiState.prompt.isNotBlank() || uiState.hasAttachedImages) &&
-                            !uiState.isSending
+                        enabled = uiState.canSend
                     ) {
-                        Text(if (uiState.isSending) "Sending..." else "Send")
+                        Text(if (uiState.isSending) "Queue" else "Send")
                     }
                 }
             }
+        }
+    }
+}
+
+/** A prompt waiting for the current reply to finish, with a way to take it back. */
+@Composable
+private fun QueuedPromptRow(
+    queued: QueuedPrompt,
+    onCancel: () -> Unit
+) {
+    val label = when {
+        queued.text.isNotBlank() -> queued.text
+        queued.images.size == 1 -> "1 image"
+        else -> "${queued.images.size} images"
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "Queued: $label",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.outline,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        TextButton(onClick = onCancel) {
+            Text("Cancel")
         }
     }
 }
