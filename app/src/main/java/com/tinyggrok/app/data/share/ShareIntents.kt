@@ -1,10 +1,12 @@
 package com.tinyggrok.app.data.share
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.text.Html
+import androidx.core.content.FileProvider
 import java.io.File
 
 private const val SHARED_INBOX_DIR = "shared_inbox"
@@ -38,6 +40,30 @@ fun startPlainTextShare(context: Context, text: String, chooserTitle: String) {
     }
     context.startActivity(Intent.createChooser(intent, chooserTitle))
 }
+
+/**
+ * Offer one of this app's own image files to other apps.
+ *
+ * Other apps cannot read our cache directory, so the file goes out as a FileProvider
+ * content URI with a read grant. The grant is attached through ClipData as well as the
+ * flag: from Android 10 the chooser only forwards a grant it can see in the clip, and
+ * without it the receiving app gets a URI it is not allowed to open.
+ */
+fun startImageFileShare(context: Context, file: File, chooserTitle: String) {
+    val uri = FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "image/jpeg"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        // Email apps use this as the subject line; messengers such as Signal and
+        // Telegram ignore it. No EXTRA_TEXT: messengers would post it as a caption.
+        putExtra(Intent.EXTRA_SUBJECT, file.nameWithoutExtension.replace('_', ' '))
+        clipData = ClipData.newUri(context.contentResolver, file.name, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, chooserTitle))
+}
+
+internal const val FILE_PROVIDER_AUTHORITY = "com.tinyggrok.app.fileprovider"
 
 fun htmlToPlainText(html: String): String =
     Html.fromHtml(html, Html.FROM_HTML_MODE_COMPACT).toString().trim()

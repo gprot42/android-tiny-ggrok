@@ -486,10 +486,17 @@ fun ChatScreen(
 
             // Prompt stays editable while a reply is in flight so the user can draft
             // the next question. Send/Resend stay disabled until the current request finishes.
+            // The scanner sits beside the prompt box, not inside it: the box is for text
+            // and its one inline icon attaches an existing image.
+            val canAttach = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             OutlinedTextField(
                 value = uiState.prompt,
                 onValueChange = viewModel::updatePrompt,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.weight(1f),
                 label = {
                     Text(
                         when {
@@ -503,29 +510,33 @@ fun ChatScreen(
                 maxLines = 4,
                 enabled = true,
                 trailingIcon = {
-                    val canAttach = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = { launchDocumentScan() },
-                            enabled = canAttach
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.DocumentScanner,
-                                contentDescription = "Scan a document"
-                            )
-                        }
-                        IconButton(
-                            onClick = { imagePicker.launch("image/*") },
-                            enabled = canAttach
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Image,
-                                contentDescription = "Attach images"
-                            )
-                        }
+                    IconButton(
+                        onClick = { imagePicker.launch("image/*") },
+                        enabled = canAttach
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Image,
+                            contentDescription = "Attach images"
+                        )
                     }
                 }
             )
+            IconButton(
+                onClick = { launchDocumentScan() },
+                enabled = canAttach,
+                modifier = Modifier.padding(start = 4.dp, top = 6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.DocumentScanner,
+                    contentDescription = "Scan a document",
+                    tint = if (canAttach) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    }
+                )
+            }
+            } // prompt row
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

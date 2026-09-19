@@ -12,6 +12,9 @@ import android.net.Uri
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.max
 
 /** Longest side kept for the working photo. Bounds memory while keeping print legible. */
@@ -151,7 +154,9 @@ internal fun purgeOldScans(context: Context, now: Long = System.currentTimeMilli
 }
 
 internal fun saveScanJpeg(context: Context, bitmap: Bitmap): File {
-    val file = File(scanDirectory(context), "scan_${System.currentTimeMillis()}.jpg")
+    // Shared files keep this name in the receiving app, so make it readable there.
+    val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+    val file = File(scanDirectory(context), "Scan_$stamp.jpg")
     file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
     return file
 }

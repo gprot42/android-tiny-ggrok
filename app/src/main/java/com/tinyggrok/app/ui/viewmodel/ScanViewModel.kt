@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 
 enum class ScanPhase {
@@ -83,6 +84,7 @@ class ScanViewModel @Inject constructor(
     fun start(photoUri: Uri) {
         detectJob?.cancel()
         userAdjusted = false
+        flattened = null
         _uiState.value = ScanUiState(note = "Opening photo…")
 
         detectJob = viewModelScope.launch {
@@ -184,25 +186,48 @@ class ScanViewModel @Inject constructor(
         }
     }
 
-    /** Flatten the page and hand back where it was saved. */
-    fun confirm(onScanned: (Uri) -> Unit) {
+    /** Flatten the page for the prompt and hand back where it was saved. */
+    fun confirm(onScanned: (Uri) -> Unit) = flattenThen { file -> onScanned(Uri.fromFile(file)) }
+
+    /**
+     * Flatten the page for another app. The scanner stays open afterwards, so the same
+     * aligned page can go to the prompt as well without scanning twice.
+     */
+    fun share(onReady: (File) -> Unit) = flattenThen(keepOpen = true, then = onReady)
+
+    /**
+     * The straightened page for a given set of corners. Kept so that sharing and then
+     * adding to the prompt (or sharing twice) warps the photo once, not once per tap.
+     */
+    private var flattened: Pair<DocumentCorners, File>? = null
+
+    private fun flattenThen(keepOpen: Boolean = false, then: (File) -> Unit) {
         val state = _uiState.value
         val photo = state.photo ?: return
         if (!state.canConfirm) return
         detectJob?.cancel()
+        // Detection is abandoned by this point, so there is no "finding edges" to return to.
+        val detecting = state.phase == ScanPhase.DETECTING
+        val phaseBefore = if (detecting) ScanPhase.MANUAL else state.phase
+        val noteBefore = if (detecting) "" else state.note
         _uiState.value = state.copy(phase = ScanPhase.SAVING, note = "Straightening…", error = null)
 
         viewModelScope.launch {
             try {
-                val file = withContext(Dispatchers.Default) {
+                val cached = flattened?.takeIf { it.first == state.corners && it.second.exists() }
+                val file = cached?.second ?: withContext(Dispatchers.Default) {
                     val flat = warpDocument(photo, state.corners)
                     try {
                         saveScanJpeg(context, flat)
                     } finally {
                         flat.recycle()
                     }
+                }.also { flattened = state.corners to it }
+
+                if (keepOpen) {
+                    _uiState.value = _uiState.value.copy(phase = phaseBefore, note = noteBefore)
                 }
-                onScanned(Uri.fromFile(file))
+                then(file)
             } catch (e: Throwable) {
                 // OutOfMemoryError included: a huge photo must not take the app down.
                 _uiState.value = _uiState.value.copy(
@@ -218,6 +243,7 @@ class ScanViewModel @Inject constructor(
     fun reset() {
         detectJob?.cancel()
         detectJob = null
+        flattened = null
         _uiState.value = ScanUiState()
     }
 

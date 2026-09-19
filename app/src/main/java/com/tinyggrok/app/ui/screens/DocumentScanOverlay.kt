@@ -1,6 +1,7 @@
 package com.tinyggrok.app.ui.screens
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +41,7 @@ import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -45,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.tinyggrok.app.data.scan.DocumentCorners
 import com.tinyggrok.app.data.scan.NormPoint
+import com.tinyggrok.app.data.share.startImageFileShare
 import com.tinyggrok.app.ui.viewmodel.ScanPhase
 import com.tinyggrok.app.ui.viewmodel.ScanViewModel
 import kotlin.math.hypot
@@ -76,6 +81,7 @@ fun DocumentScanOverlay(
     viewModel: ScanViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
     LaunchedEffect(photoUri) { viewModel.start(photoUri) }
     DisposableEffect(Unit) { onDispose { viewModel.reset() } }
@@ -137,29 +143,56 @@ fun DocumentScanOverlay(
                 }
             }
 
+            // Alignment tools, kept apart from the outcomes below so that a fifth button
+            // never squeezes the row: crowded rows are how Send once fell off screen.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(
+                    onClick = viewModel::redetect,
+                    enabled = state.canConfirm && state.phase != ScanPhase.DETECTING
+                ) { Text("Auto", maxLines = 1, softWrap = false) }
+                TextButton(
+                    onClick = viewModel::snapToEdges,
+                    enabled = state.canConfirm
+                ) { Text("Snap", maxLines = 1, softWrap = false) }
+            }
+
+            // Where the aligned page goes. Share leaves the scanner open, so one scan can
+            // be sent to another app and added to the prompt as well.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                    .padding(start = 8.dp, end = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
-                        onClick = viewModel::redetect,
-                        enabled = state.canConfirm && state.phase != ScanPhase.DETECTING
-                    ) { Text("Auto") }
-                    TextButton(
-                        onClick = viewModel::snapToEdges,
-                        enabled = state.canConfirm
-                    ) { Text("Snap") }
-                    Button(
-                        onClick = { viewModel.confirm(onScanned) },
-                        enabled = state.canConfirm,
-                        modifier = Modifier.padding(start = 8.dp)
-                    ) { Text("Use scan") }
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel", color = Color.White, maxLines = 1, softWrap = false)
                 }
+                Spacer(modifier = Modifier.weight(1f))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.share { file ->
+                            try {
+                                startImageFileShare(context, file, "Share scan")
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    "No app available to share to.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    },
+                    enabled = state.canConfirm
+                ) { Text("Share", maxLines = 1, softWrap = false) }
+                Button(
+                    onClick = { viewModel.confirm(onScanned) },
+                    enabled = state.canConfirm,
+                    modifier = Modifier.padding(start = 8.dp)
+                ) { Text("To prompt", maxLines = 1, softWrap = false) }
             }
         }
     }
