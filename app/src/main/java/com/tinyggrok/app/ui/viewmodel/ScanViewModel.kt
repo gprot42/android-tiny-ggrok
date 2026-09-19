@@ -18,6 +18,7 @@ import com.tinyggrok.app.data.scan.NormPoint
 import com.tinyggrok.app.data.scan.locatePage
 import com.tinyggrok.app.data.scan.isPlausibleQuad
 import com.tinyggrok.app.data.scan.SCAN_PROMPT_MAX_SIDE
+import com.tinyggrok.app.data.scan.enhanceDocument
 import com.tinyggrok.app.data.scan.flattenFromCapture
 import com.tinyggrok.app.data.scan.loadCapture
 import com.tinyggrok.app.data.scan.promptSizedCopy
@@ -64,6 +65,8 @@ data class ScanUiState(
     val phase: ScanPhase = ScanPhase.LOADING,
     /** One line explaining the current state, shown above the photo. */
     val note: String = "",
+    /** Whether the saved page is cleaned up to read like a scan (white paper, dark ink). */
+    val enhance: Boolean = true,
     val error: String? = null
 ) {
     val canConfirm: Boolean
@@ -117,7 +120,7 @@ class ScanViewModel @Inject constructor(
         capture = null
         captureUri = null
         userTurn = 0
-        _uiState.value = ScanUiState(note = "Opening photo…")
+        _uiState.value = ScanUiState(note = "Opening photo…", enhance = enhancePreference)
 
         detectJob = viewModelScope.launch {
             val photo = try {
@@ -131,11 +134,17 @@ class ScanViewModel @Inject constructor(
             } catch (e: Exception) {
                 _uiState.value = ScanUiState(
                     phase = ScanPhase.MANUAL,
+                    enhance = enhancePreference,
                     error = "Couldn't open the photo: ${e.message ?: "unknown error"}"
                 )
                 return@launch
             }
-            _uiState.value = ScanUiState(photo = photo, phase = ScanPhase.DETECTING, note = FINDING)
+            _uiState.value = ScanUiState(
+                photo = photo,
+                phase = ScanPhase.DETECTING,
+                note = FINDING,
+                enhance = enhancePreference
+            )
             detectAndAlign(photo)
         }
     }
@@ -304,6 +313,16 @@ class ScanViewModel @Inject constructor(
      * adding to the prompt (or sharing twice) warps the photo once, not once per tap.
      */
     private var flattened: Pair<DocumentCorners, File>? = null
+    private var flattenedEnhanced = true
+
+    /** Survives from one scan to the next, so the choice is made once, not every page. */
+    private var enhancePreference = true
+
+    /** Enhancement suits print; a page that is mostly photographs looks better without it. */
+    fun toggleEnhance() {
+        enhancePreference = !enhancePreference
+        _uiState.value = _uiState.value.copy(enhance = enhancePreference)
+    }
 
     /**
      * Cut the page out of the capture as stored, not out of the reduced preview. If that
@@ -338,19 +357,36 @@ class ScanViewModel @Inject constructor(
         val detecting = state.phase == ScanPhase.DETECTING
         val phaseBefore = if (detecting) ScanPhase.MANUAL else state.phase
         val noteBefore = if (detecting) "" else state.note
-        _uiState.value = state.copy(phase = ScanPhase.SAVING, note = "Straightening…", error = null)
+        _uiState.value = state.copy(
+            phase = ScanPhase.SAVING,
+            note = if (state.enhance) "Straightening and enhancing…" else "Straightening…",
+            error = null
+        )
 
         viewModelScope.launch {
             try {
-                val cached = flattened?.takeIf { it.first == state.corners && it.second.exists() }
+                val cached = flattened?.takeIf {
+                    it.first == state.corners && flattenedEnhanced == state.enhance && it.second.exists()
+                }
                 val file = cached?.second ?: withContext(Dispatchers.Default) {
                     val flat = flattenAtBestResolution(photo, state.corners)
                     try {
+                        if (state.enhance) {
+                            // Cosmetic: if it cannot run, the plain page is still a good scan.
+                            try {
+                                enhanceDocument(flat)
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "Enhancement skipped: ${e.javaClass.simpleName}: ${e.message}")
+                            }
+                        }
                         saveScanJpeg(context, flat)
                     } finally {
                         flat.recycle()
                     }
-                }.also { flattened = state.corners to it }
+                }.also {
+                    flattened = state.corners to it
+                    flattenedEnhanced = state.enhance
+                }
 
                 if (keepOpen) {
                     _uiState.value = _uiState.value.copy(phase = phaseBefore, note = noteBefore)
@@ -376,7 +412,7 @@ class ScanViewModel @Inject constructor(
         capture = null
         captureUri = null
         userTurn = 0
-        _uiState.value = ScanUiState()
+        _uiState.value = ScanUiState(enhance = enhancePreference)
     }
 
     private companion object {

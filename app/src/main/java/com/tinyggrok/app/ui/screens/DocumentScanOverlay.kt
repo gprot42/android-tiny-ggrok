@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -144,10 +146,22 @@ fun DocumentScanOverlay(
             // Alignment tools, kept apart from the outcomes below so that a fifth button
             // never squeezes the row: crowded rows are how Send once fell off screen.
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                TextButton(
+                    onClick = viewModel::toggleEnhance,
+                    enabled = state.canConfirm
+                ) {
+                    Text(
+                        text = if (state.enhance) "Enhance: on" else "Enhance: off",
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
                 TextButton(
                     onClick = viewModel::rotate,
                     enabled = state.canConfirm

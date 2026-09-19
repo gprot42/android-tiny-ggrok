@@ -260,6 +260,44 @@ internal fun warpDocument(
     return out
 }
 
+private class BitmapPixelGrid(private val bitmap: Bitmap) : PixelGrid {
+    override val width: Int get() = bitmap.width
+    override val height: Int get() = bitmap.height
+
+    override fun readRows(y: Int, rows: Int, into: IntArray) {
+        bitmap.getPixels(into, 0, width, 0, y, width, rows)
+    }
+
+    override fun writeRows(y: Int, rows: Int, from: IntArray) {
+        bitmap.setPixels(from, 0, width, 0, y, width, rows)
+    }
+}
+
+/**
+ * Make a flattened page read like a scan: white paper, dark ink, crisp edges. In place,
+ * split across a few threads; see [DocumentEnhancer] for what it does and why.
+ */
+internal fun enhanceDocument(page: Bitmap) {
+    val workers = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+    DocumentEnhancer.enhance(BitmapPixelGrid(page), bands = workers) { jobs ->
+        if (jobs.size == 1) {
+            jobs[0]()
+        } else {
+            var failure: Throwable? = null
+            jobs.map { job ->
+                Thread {
+                    try {
+                        job()
+                    } catch (t: Throwable) {
+                        failure = t
+                    }
+                }.apply { start() }
+            }.forEach { it.join() }
+            failure?.let { throw it }
+        }
+    }
+}
+
 internal fun scanDirectory(context: Context): File =
     File(context.cacheDir, SCAN_DIR).apply { mkdirs() }
 

@@ -27,6 +27,38 @@ class RealPhotoHarnessTest {
         println("HARNESS $label $text")
     }
 
+    /**
+     * Opt-in: run the enhancer on a real flattened scan. ENHANCE_FIXTURE is a raw colour
+     * file ("width height\n" then RGB bytes); the result is written to ENHANCE_OUT in the
+     * same format, and the time taken is printed.
+     */
+    @Test
+    fun enhanceARealScan() {
+        val path = System.getenv("ENHANCE_FIXTURE")
+        val out = System.getenv("ENHANCE_OUT")
+        assumeTrue("ENHANCE_FIXTURE not set", !path.isNullOrBlank() && !out.isNullOrBlank())
+        val bytes = File(path!!).readBytes()
+        val headerEnd = bytes.indexOf('\n'.code.toByte())
+        val (w, h) = String(bytes, 0, headerEnd).trim().split(" ").map { it.toInt() }
+        val px = IntArray(w * h) { i ->
+            val o = headerEnd + 1 + i * 3
+            (0xFF shl 24) or ((bytes[o].toInt() and 0xFF) shl 16) or
+                ((bytes[o + 1].toInt() and 0xFF) shl 8) or (bytes[o + 2].toInt() and 0xFF)
+        }
+        val started = System.nanoTime()
+        DocumentEnhancer.enhance(ArrayPixelGrid(w, h, px), bands = 4) { jobs ->
+            jobs.map { Thread(it).apply { start() } }.forEach { it.join() }
+        }
+        println("HARNESS enhanced ${w}x$h in ${(System.nanoTime() - started) / 1_000_000} ms")
+        val result = ByteArray(w * h * 3)
+        for (i in px.indices) {
+            result[i * 3] = (px[i] shr 16).toByte()
+            result[i * 3 + 1] = (px[i] shr 8).toByte()
+            result[i * 3 + 2] = px[i].toByte()
+        }
+        File(out!!).writeBytes("$w $h\n".toByteArray() + result)
+    }
+
     @Test
     fun locateAndRefineOnARealPhoto() {
         val path = System.getenv("SCAN_FIXTURE")
