@@ -52,7 +52,13 @@ internal object DocumentEnhancer {
     private const val UNSHARP_AMOUNT = 1.1f
     private const val UNSHARP_SIGMA = 1.2f
     private const val WHITE_POINT = 0.95f
-    private const val MAX_BLACK_POINT = 0.5f
+    /**
+     * Highest brightness that may be mapped to black. At 0.5, soft captures had their
+     * already-blurred strokes thickened until small letters merged into blobs (seen on a
+     * real scan's letterhead). Sharp captures are barely affected by the lower ceiling:
+     * their ink is already darker than this.
+     */
+    private const val MAX_BLACK_POINT = 0.40f
     private const val CHROMA_GAIN = 1.6f
     private const val CHROMA_BOX_RADIUS = 2
 

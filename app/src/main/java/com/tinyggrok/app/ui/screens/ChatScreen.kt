@@ -66,6 +66,8 @@ import androidx.compose.material.icons.outlined.DocumentScanner
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -192,8 +194,10 @@ fun ChatScreen(
         pendingCapture = null
     }
 
-    // Long-press on the lens: align a photo that already exists. Useful for pictures taken
-    // earlier with the full camera app, which are often better than a quick capture.
+    var lensMenuOpen by remember { mutableStateOf(false) }
+
+    // Align a photo that already exists: pictures taken with the full camera app are
+    // often far better than a quick capture.
     val existingPhotoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { picked: Uri? ->
@@ -347,29 +351,60 @@ fun ChatScreen(
                     // The lens: scan a document. Up here with Voice, the app's other
                     // capture feature, and well away from the prompt box.
                     val canScan = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
-                    // Tap: photograph a page. Long-press: align a photo you already have.
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .combinedClickable(
-                                enabled = canScan,
-                                onClickLabel = "Scan a document",
-                                onLongClickLabel = "Scan an existing photo",
-                                onLongClick = { existingPhotoPicker.launch("image/*") },
-                                onClick = { launchDocumentScan() }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.DocumentScanner,
-                            contentDescription = "Scan a document. Long-press to use an existing photo",
-                            tint = if (canScan) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.outline
-                            }
-                        )
+                    // The lens offers both sources openly. Quick capture is convenient, but on
+                    // some phones (Pixels among them) it skips the multi-frame processing the
+                    // full camera app applies, and in a dim room the result is visibly soft.
+                    // A photo from the camera app scans far better, so that route must not be
+                    // hidden behind a long-press.
+                    Box {
+                        IconButton(onClick = { lensMenuOpen = true }, enabled = canScan) {
+                            Icon(
+                                imageVector = Icons.Outlined.DocumentScanner,
+                                contentDescription = "Scan a document",
+                                tint = if (canScan) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.outline
+                                }
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = lensMenuOpen,
+                            onDismissRequest = { lensMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text("Take a photo")
+                                        Text(
+                                            "Quick. Use good light or the flash.",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.outline
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    lensMenuOpen = false
+                                    launchDocumentScan()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text("Choose a photo")
+                                        Text(
+                                            "Sharpest: shoot it with your camera app first.",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.outline
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    lensMenuOpen = false
+                                    existingPhotoPicker.launch("image/*")
+                                }
+                            )
+                        }
                     }
                     TextButton(onClick = onNavigateToVoiceTranslator) {
                         Text("Voice")

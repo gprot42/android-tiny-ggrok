@@ -123,6 +123,15 @@ fun DocumentScanOverlay(
                 )
             }
 
+            if (state.facts.isNotEmpty()) {
+                Text(
+                    text = state.facts,
+                    color = Color.White.copy(alpha = 0.6f),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp)
+                )
+            }
+
             Box(
                 modifier = Modifier
                     .weight(1f)

@@ -2,12 +2,14 @@ package com.tinyggrok.app.ui.viewmodel
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tinyggrok.app.data.local.SettingsRepository
+import com.tinyggrok.app.data.repository.DebugLogRepository
 import com.tinyggrok.app.data.repository.ResolvedAuth
 import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
 import com.tinyggrok.app.data.scan.Capture
@@ -19,7 +21,9 @@ import com.tinyggrok.app.data.scan.locatePage
 import com.tinyggrok.app.data.scan.isPlausibleQuad
 import com.tinyggrok.app.data.scan.SCAN_PROMPT_MAX_SIDE
 import com.tinyggrok.app.data.scan.enhanceDocument
+import com.tinyggrok.app.data.scan.SCAN_OUTPUT_MAX_SIDE
 import com.tinyggrok.app.data.scan.flattenFromCapture
+import com.tinyggrok.app.data.scan.flattenedSize
 import com.tinyggrok.app.data.scan.loadCapture
 import com.tinyggrok.app.data.scan.promptSizedCopy
 import com.tinyggrok.app.data.scan.quadArea
@@ -35,7 +39,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -67,6 +74,12 @@ data class ScanUiState(
     val note: String = "",
     /** Whether the saved page is cleaned up to read like a scan (white paper, dark ink). */
     val enhance: Boolean = true,
+    /**
+     * Plain facts about what is being worked with: the photo's size as the camera stored
+     * it, and the size the page will come out at. Sharpness complaints are impossible to
+     * reason about without these, and they answer "should I move closer?" at a glance.
+     */
+    val facts: String = "",
     val error: String? = null
 ) {
     val canConfirm: Boolean
@@ -83,6 +96,7 @@ data class ScanUiState(
  */
 @HiltViewModel
 class ScanViewModel @Inject constructor(
+    private val debugLog: DebugLogRepository,
     private val detector: DocumentCornerDetector,
     private val authRepository: SuperGrokAuthRepository,
     private val settingsRepository: SettingsRepository,
@@ -90,7 +104,11 @@ class ScanViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ScanUiState())
+
+    /** The state as the screen sees it, with [ScanUiState.facts] always matching the corners. */
     val uiState: StateFlow<ScanUiState> = _uiState
+        .map { if (it.photo == null) it else it.copy(facts = factsFor(it.corners)) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ScanUiState())
 
     private var detectJob: Job? = null
 
@@ -315,6 +333,9 @@ class ScanViewModel @Inject constructor(
     private var flattened: Pair<DocumentCorners, File>? = null
     private var flattenedEnhanced = true
 
+    /** Whether the last page came from the original photo or had to fall back, and why. */
+    private var flattenedHow = ""
+
     /** Survives from one scan to the next, so the choice is made once, not every page. */
     private var enhancePreference = true
 
@@ -340,10 +361,13 @@ class ScanViewModel @Inject constructor(
                     capture = source,
                     corners = corners,
                     turned = source.exifRotation + userTurn
-                )
+                ).also { flattenedHow = "from the original photo" }
             } catch (e: Throwable) {
                 Log.w(TAG, "Full-resolution flatten failed, using preview: ${e.javaClass.simpleName}: ${e.message}")
+                flattenedHow = "REDUCED, from the preview, because ${e.javaClass.simpleName}: ${e.message}"
             }
+        } else {
+            flattenedHow = "REDUCED, from the preview, because the original photo was not available"
         }
         return warpDocument(preview, corners, SCAN_PROMPT_MAX_SIDE)
     }
@@ -388,8 +412,20 @@ class ScanViewModel @Inject constructor(
                     flattenedEnhanced = state.enhance
                 }
 
+                // Never let a quality fallback pass silently again: say what was saved.
+                val size = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    .also { BitmapFactory.decodeFile(file.path, it) }
+                val summary = "Saved ${size.outWidth} × ${size.outHeight} px, $flattenedHow."
+                debugLog.logIncoming(
+                    summary = "SCAN ${size.outWidth}×${size.outHeight} | enhance=${state.enhance}",
+                    body = "$summary\n${factsFor(state.corners)}\n" +
+                        "exif=${capture?.exifRotation} userTurn=$userTurn file=${file.name} (${file.length() / 1024} KB)"
+                )
                 if (keepOpen) {
-                    _uiState.value = _uiState.value.copy(phase = phaseBefore, note = noteBefore)
+                    _uiState.value = _uiState.value.copy(
+                        phase = phaseBefore,
+                        note = if (flattenedHow.startsWith("REDUCED")) summary else noteBefore
+                    )
                 }
                 then(file)
             } catch (e: Throwable) {
@@ -401,6 +437,16 @@ class ScanViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /** "Photo 4080 × 3072 · page about 2100 × 2900 px", for the current corners. */
+    private fun factsFor(corners: DocumentCorners): String {
+        val source = capture ?: return ""
+        val sideways = ((source.exifRotation + userTurn) / 90) % 2 != 0
+        val shownW = if (sideways) source.storedHeight else source.storedWidth
+        val shownH = if (sideways) source.storedWidth else source.storedHeight
+        val (pageW, pageH) = flattenedSize(corners, shownW, shownH, SCAN_OUTPUT_MAX_SIDE)
+        return "Photo ${source.storedWidth} × ${source.storedHeight} · page about $pageW × $pageH px"
     }
 
     /** Release the photo when the scanner closes. */

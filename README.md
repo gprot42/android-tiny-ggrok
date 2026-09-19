@@ -34,9 +34,14 @@ A lightweight native Android app for chatting with xAI's Grok models.
 
 ## Document scanner
 
-Built to work without Google Play services, ML Kit or OpenCV. Tap the scan icon in the top bar to photograph a page, or **long-press** it to align a photo you already have (pictures taken with the full camera app are often better than a quick capture).
+Built to work without Google Play services, ML Kit or OpenCV. Tap the scan icon in the top bar and pick a source:
 
-For a sharp scan, fill the frame with the page. Resolution that was never captured cannot be recovered, and the scanner says so when the page covers less than about half the photo.
+- **Take a photo**: quick capture through a camera intent. Convenient, but on some phones, Pixels among them, quick capture skips the multi-frame processing the full camera app applies. In a dim room that means one noisy, heavily smoothed frame, and small print comes out soft however it is processed afterwards. Use good light or turn the flash on.
+- **Choose a photo**: align a picture you already have. Shooting with your full camera app first and choosing that photo gives the sharpest scans by a wide margin.
+
+This was established the hard way: a user's scan was mush while their camera-app photo of the same page was crisp, and feeding that photo through the identical pipeline produced a crisp scan. The processing was never the limit; the input was.
+
+The scanner shows the facts it is working with, for example `Photo 4080 × 3072 · page about 2100 × 2900 px`, so you can see at a glance whether to move closer. For a sharp scan, fill the frame with the page: detail that was never captured cannot be recovered. If a page ever has to be produced from the reduced preview instead of the original photo, the scanner says so rather than failing quietly, and with Debug mode on each save is recorded in the log with its size and how it was produced.
 
 1. **Capture** uses a plain camera intent, so any camera app works (including on de-Googled phones) and Tiny Ggrok needs no camera permission.
 2. **Find the page, on the phone first.** A light page on a darker surface, or the reverse, is located in milliseconds with no network: shrink and median-filter the photo until texture and print drop out, split it into two brightness classes, and reduce the page region's outline to four corners. The proposal is only accepted if at least three of its sides turn out to lie on real, straight paper edges, so a tidy-looking shape produced by uneven lighting is thrown out.
