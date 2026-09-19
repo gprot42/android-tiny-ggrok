@@ -41,6 +41,27 @@ data class DocumentCorners(
     }
 }
 
+private fun quarterTurns(degrees: Int): Int = (((degrees % 360) + 360) % 360) / 90
+
+/**
+ * Where a point lands when the image is turned clockwise by [degrees] (a multiple of 90).
+ * A clockwise quarter turn sends the top-left of the image to the top-right.
+ */
+internal fun NormPoint.turnedClockwise(degrees: Int): NormPoint = when (quarterTurns(degrees)) {
+    1 -> NormPoint(1f - y, x)
+    2 -> NormPoint(1f - x, 1f - y)
+    3 -> NormPoint(y, 1f - x)
+    else -> this
+}
+
+/**
+ * The inverse: given a point on an image that has been turned clockwise by [degrees],
+ * where it was on the original. Used to carry corners placed on the upright preview back
+ * onto the camera's stored image, which is what full-resolution flattening reads.
+ */
+internal fun NormPoint.beforeTurningClockwise(degrees: Int): NormPoint =
+    turnedClockwise(360 - quarterTurns(degrees) * 90)
+
 /** Smallest share of the photo a detected page may cover before we distrust it. */
 private const val MIN_AREA_FRACTION = 0.05f
 

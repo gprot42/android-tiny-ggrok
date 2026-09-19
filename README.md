@@ -34,19 +34,21 @@ A lightweight native Android app for chatting with xAI's Grok models.
 
 ## Document scanner
 
-Built to work without Google Play services, ML Kit or OpenCV. Tap the scan icon in the top bar.
+Built to work without Google Play services, ML Kit or OpenCV. Tap the scan icon in the top bar to photograph a page, or **long-press** it to align a photo you already have (pictures taken with the full camera app are often better than a quick capture).
+
+For a sharp scan, fill the frame with the page. Resolution that was never captured cannot be recovered, and the scanner says so when the page covers less than about half the photo.
 
 1. **Capture** uses a plain camera intent, so any camera app works (including on de-Googled phones) and Tiny Ggrok needs no camera permission.
 2. **Find the page, on the phone first.** A light page on a darker surface, or the reverse, is located in milliseconds with no network: shrink and median-filter the photo until texture and print drop out, split it into two brightness classes, and reduce the page region's outline to four corners. The proposal is only accepted if at least three of its sides turn out to lie on real, straight paper edges, so a tidy-looking shape produced by uneven lighting is thrown out.
 3. **Ask Grok when that is not confident**, for example white paper on white marble, or a cluttered scene. A reduced copy of the photo (about 1024 px) goes to Grok, which returns the four corners. **Ask Grok** in the scanner forces this.
 4. **Make it straight.** Whichever route found the page, it is only accurate to a percent or so, which shows up as a tilted scan. So the app walks along each rough edge, works out where the paper begins at dozens of points, fits a straight line through them, and uses the line intersections as the corners.
-5. **Flatten.** Android's own four-point perspective transform maps the page to an upright rectangle, up to 2048 px on the long side so small print stays legible.
+5. **Flatten, from the original capture.** Android's own four-point perspective transform maps the page to an upright rectangle. The editor works on a reduced preview, but the page is cut from the photo *as stored*, at up to 3508 px on the long side (A4 at 300 dpi) and never enlarged. Only the page's bounding box is decoded, so a 50-megapixel capture costs no more memory than the page needs. Cutting the page out of the preview instead, as earlier versions did, kept under half the detail whenever the page did not fill the frame.
 
 "Where the paper begins" is judged by comparing the **median** brightness of a region just inside a candidate position with one just outside it. That choice was earned the hard way. Looking for the sharpest local step drifted onto carpet speckle. Comparing region *means* survived texture but cropped a scan to its block of text on white marble, because print drags a mean down. A median ignores anything covering less than half of a region, which is true of print, plank seams, marble veins and carpet pile alike. The median identifies the right boundary; a sharp local measure then pinpoints it; and the line is refitted after dropping points that disagree, so a finger on the page or a dog-eared corner does not tilt the edge it interrupts.
 
 Tested on synthetic dark wood, pale wood, white marble, dark granite, concrete and carpet, in even light and lit from one side, each with its most misleading feature (seams, grain, veins, speckle, contact shadow). All land within 0.3% of the frame.
 
-Once the page is aligned there are two places it can go. **To prompt** attaches it to your message to Grok. **Share** sends the straightened JPEG through Android's share sheet to any app that accepts an image, such as Signal, Telegram or your email app (the file name becomes the email subject). Share leaves the scanner open, so one scan can go to another app and into the prompt without scanning twice.
+Once the page is aligned there are two places it can go. **To prompt** attaches a copy capped at 2048 px (ample for Grok to read small print, and a sensible upload) to your message. **Share** sends the full-detail straightened JPEG through Android's share sheet to any app that accepts an image, such as Signal, Telegram or your email app (the file name becomes the email subject). Share leaves the scanner open, so one scan can go to another app and into the prompt without scanning twice.
 
 You can drag any corner, tap **Snap** to pull the current corners onto the nearest paper edges, and **Rotate** to turn the photo a quarter turn: a phone held flat over a page cannot tell portrait from landscape, so captures often arrive sideways.
 

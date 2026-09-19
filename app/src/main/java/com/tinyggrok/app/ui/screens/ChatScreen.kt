@@ -92,6 +92,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -130,7 +131,7 @@ import org.commonmark.ext.gfm.tables.TablesExtension
 import org.commonmark.parser.Parser
 import org.commonmark.renderer.html.HtmlRenderer
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     onNavigateToSettings: () -> Unit,
@@ -189,6 +190,14 @@ fun ChatScreen(
     ) { saved: Boolean ->
         if (saved) photoToScan = pendingCapture
         pendingCapture = null
+    }
+
+    // Long-press on the lens: align a photo that already exists. Useful for pictures taken
+    // earlier with the full camera app, which are often better than a quick capture.
+    val existingPhotoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { picked: Uri? ->
+        if (picked != null) photoToScan = picked
     }
 
     fun launchDocumentScan() {
@@ -338,10 +347,23 @@ fun ChatScreen(
                     // The lens: scan a document. Up here with Voice, the app's other
                     // capture feature, and well away from the prompt box.
                     val canScan = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
-                    IconButton(onClick = { launchDocumentScan() }, enabled = canScan) {
+                    // Tap: photograph a page. Long-press: align a photo you already have.
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .combinedClickable(
+                                enabled = canScan,
+                                onClickLabel = "Scan a document",
+                                onLongClickLabel = "Scan an existing photo",
+                                onLongClick = { existingPhotoPicker.launch("image/*") },
+                                onClick = { launchDocumentScan() }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
                             imageVector = Icons.Outlined.DocumentScanner,
-                            contentDescription = "Scan a document",
+                            contentDescription = "Scan a document. Long-press to use an existing photo",
                             tint = if (canScan) {
                                 MaterialTheme.colorScheme.primary
                             } else {

@@ -103,6 +103,54 @@ class DocumentGeometryTest {
         assertEquals(1000, w)
     }
 
+    private fun assertPoint(expected: NormPoint, actual: NormPoint) {
+        assertEquals(expected.x, actual.x, 1e-6f)
+        assertEquals(expected.y, actual.y, 1e-6f)
+    }
+
+    @Test
+    fun aClockwiseQuarterTurnSendsTopLeftToTopRight() {
+        val topLeft = NormPoint(0f, 0f)
+        assertPoint(NormPoint(1f, 0f), topLeft.turnedClockwise(90))
+        assertPoint(NormPoint(1f, 1f), topLeft.turnedClockwise(180))
+        assertPoint(NormPoint(0f, 1f), topLeft.turnedClockwise(270))
+        assertPoint(topLeft, topLeft.turnedClockwise(0))
+        assertPoint(topLeft, topLeft.turnedClockwise(360))
+    }
+
+    @Test
+    fun anOffCentrePointTurnsAsTheImageDoes() {
+        // Near the left edge, a quarter of the way down. After a clockwise quarter turn
+        // the left edge has become the top, so the point is near the top, and what was a
+        // quarter of the way down is now a quarter of the way in from the right.
+        assertPoint(NormPoint(0.75f, 0.1f), NormPoint(0.1f, 0.25f).turnedClockwise(90))
+    }
+
+    @Test
+    fun turningBackUndoesTurningForEveryRotation() {
+        val p = NormPoint(0.13f, 0.71f)
+        for (degrees in listOf(0, 90, 180, 270, 450, -90)) {
+            assertPoint(p, p.turnedClockwise(degrees).beforeTurningClockwise(degrees))
+            assertPoint(p, p.beforeTurningClockwise(degrees).turnedClockwise(degrees))
+        }
+    }
+
+    @Test
+    fun turningKeepsCornersClockwise() {
+        // The warp maps corners in order onto a rectangle; if a turn flipped their sense
+        // the page would come out mirrored.
+        for (degrees in listOf(90, 180, 270)) {
+            val turned = DocumentCorners.DEFAULT.toList().map { it.beforeTurningClockwise(degrees) }
+            var twiceArea = 0f
+            for (i in 0 until 4) {
+                val a = turned[i]
+                val b = turned[(i + 1) % 4]
+                twiceArea += a.x * b.y - b.x * a.y
+            }
+            assertTrue("rotation $degrees reversed the corner order", twiceArea > 0f)
+        }
+    }
+
     @Test
     fun withCornerReplacesOnlyThatCorner() {
         val moved = DocumentCorners.DEFAULT.withCorner(2, NormPoint(0.5f, 0.5f))

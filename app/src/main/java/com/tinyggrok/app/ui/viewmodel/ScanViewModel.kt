@@ -4,18 +4,24 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tinyggrok.app.data.local.SettingsRepository
 import com.tinyggrok.app.data.repository.ResolvedAuth
 import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
+import com.tinyggrok.app.data.scan.Capture
 import com.tinyggrok.app.data.scan.DocumentCornerDetector
 import com.tinyggrok.app.data.scan.DocumentCorners
 import com.tinyggrok.app.data.scan.LumaImage
 import com.tinyggrok.app.data.scan.NormPoint
 import com.tinyggrok.app.data.scan.locatePage
 import com.tinyggrok.app.data.scan.isPlausibleQuad
-import com.tinyggrok.app.data.scan.loadUprightBitmap
+import com.tinyggrok.app.data.scan.SCAN_PROMPT_MAX_SIDE
+import com.tinyggrok.app.data.scan.flattenFromCapture
+import com.tinyggrok.app.data.scan.loadCapture
+import com.tinyggrok.app.data.scan.promptSizedCopy
+import com.tinyggrok.app.data.scan.quadArea
 import com.tinyggrok.app.data.scan.orderCorners
 import com.tinyggrok.app.data.scan.purgeOldScans
 import com.tinyggrok.app.data.scan.refineCorners
@@ -85,6 +91,13 @@ class ScanViewModel @Inject constructor(
 
     private var detectJob: Job? = null
 
+    /** The capture behind the preview: where the final page is cut from, at full detail. */
+    private var captureUri: Uri? = null
+    private var capture: Capture? = null
+
+    /** Quarter turns the user has added on top of the capture's own EXIF rotation. */
+    private var userTurn = 0
+
     /** Grayscale copy of the current photo, built once and reused by every analysis pass. */
     private var lumaOf: Pair<Bitmap, LumaImage>? = null
 
@@ -101,14 +114,20 @@ class ScanViewModel @Inject constructor(
         userAdjusted = false
         flattened = null
         lumaOf = null
+        capture = null
+        captureUri = null
+        userTurn = 0
         _uiState.value = ScanUiState(note = "Opening photo…")
 
         detectJob = viewModelScope.launch {
             val photo = try {
                 withContext(Dispatchers.IO) {
                     purgeOldScans(context)
-                    loadUprightBitmap(context, photoUri)
-                }
+                    loadCapture(context, photoUri)
+                }.also {
+                    capture = it
+                    captureUri = photoUri
+                }.preview
             } catch (e: Exception) {
                 _uiState.value = ScanUiState(
                     phase = ScanPhase.MANUAL,
@@ -141,7 +160,7 @@ class ScanViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 corners = local,
                 phase = ScanPhase.ALIGNED,
-                note = ALIGNED
+                note = alignedNote(local)
             )
             return
         }
@@ -171,8 +190,19 @@ class ScanViewModel @Inject constructor(
         val luma = lumaFor(photo)
         val aligned = withContext(Dispatchers.Default) { refineCorners(luma, rough) }
         if (userAdjusted) return
-        _uiState.value = _uiState.value.copy(corners = aligned, phase = ScanPhase.ALIGNED, note = ALIGNED)
+        _uiState.value = _uiState.value.copy(
+            corners = aligned,
+            phase = ScanPhase.ALIGNED,
+            note = alignedNote(aligned)
+        )
     }
+
+    /**
+     * A page that fills little of the frame cannot come out sharp however it is processed:
+     * the detail was never captured. Say so while retaking is still one tap away.
+     */
+    private fun alignedNote(corners: DocumentCorners): String =
+        if (quadArea(corners) < SMALL_PAGE_AREA) ALIGNED_BUT_SMALL else ALIGNED
 
     private fun manual(note: String) {
         if (_uiState.value.phase == ScanPhase.SAVING) return
@@ -238,6 +268,7 @@ class ScanViewModel @Inject constructor(
                 val corners = orderCorners(state.corners.toList().map { NormPoint(1f - it.y, it.x) })
                 lumaOf = null
                 flattened = null
+                userTurn = (userTurn + 90) % 360
                 // The previous bitmap is left to the garbage collector: the screen may
                 // still be drawing it this frame, and recycling under it would crash.
                 _uiState.value = _uiState.value.copy(photo = turned, corners = corners)
@@ -249,8 +280,18 @@ class ScanViewModel @Inject constructor(
         }
     }
 
-    /** Flatten the page for the prompt and hand back where it was saved. */
-    fun confirm(onScanned: (Uri) -> Unit) = flattenThen { file -> onScanned(Uri.fromFile(file)) }
+    /**
+     * Flatten the page for the prompt and hand back where it was saved. The prompt gets a
+     * copy capped for upload size; the full-detail file is what Share sends.
+     */
+    fun confirm(onScanned: (Uri) -> Unit) = flattenThen { file ->
+        viewModelScope.launch {
+            val forPrompt = withContext(Dispatchers.Default) {
+                runCatching { promptSizedCopy(context, file) }.getOrDefault(file)
+            }
+            onScanned(Uri.fromFile(forPrompt))
+        }
+    }
 
     /**
      * Flatten the page for another app. The scanner stays open afterwards, so the same
@@ -263,6 +304,30 @@ class ScanViewModel @Inject constructor(
      * adding to the prompt (or sharing twice) warps the photo once, not once per tap.
      */
     private var flattened: Pair<DocumentCorners, File>? = null
+
+    /**
+     * Cut the page out of the capture as stored, not out of the reduced preview. If that
+     * fails for any reason (an odd file format, not enough memory for a huge capture),
+     * fall back to the preview: a softer scan beats no scan.
+     */
+    private fun flattenAtBestResolution(preview: Bitmap, corners: DocumentCorners): Bitmap {
+        val uri = captureUri
+        val source = capture
+        if (uri != null && source != null) {
+            try {
+                return flattenFromCapture(
+                    context = context,
+                    uri = uri,
+                    capture = source,
+                    corners = corners,
+                    turned = source.exifRotation + userTurn
+                )
+            } catch (e: Throwable) {
+                Log.w(TAG, "Full-resolution flatten failed, using preview: ${e.javaClass.simpleName}: ${e.message}")
+            }
+        }
+        return warpDocument(preview, corners, SCAN_PROMPT_MAX_SIDE)
+    }
 
     private fun flattenThen(keepOpen: Boolean = false, then: (File) -> Unit) {
         val state = _uiState.value
@@ -279,7 +344,7 @@ class ScanViewModel @Inject constructor(
             try {
                 val cached = flattened?.takeIf { it.first == state.corners && it.second.exists() }
                 val file = cached?.second ?: withContext(Dispatchers.Default) {
-                    val flat = warpDocument(photo, state.corners)
+                    val flat = flattenAtBestResolution(photo, state.corners)
                     try {
                         saveScanJpeg(context, flat)
                     } finally {
@@ -308,12 +373,22 @@ class ScanViewModel @Inject constructor(
         detectJob = null
         flattened = null
         lumaOf = null
+        capture = null
+        captureUri = null
+        userTurn = 0
         _uiState.value = ScanUiState()
     }
 
     private companion object {
+        const val TAG = "ScanViewModel"
+
         const val FINDING = "Finding the page…"
         const val ASKING_GROK = "Asking Grok to find the page… you can drag the corners meanwhile."
         const val ALIGNED = "Edges aligned. Drag a corner to adjust."
+        const val ALIGNED_BUT_SMALL =
+            "Edges aligned. For a sharper scan, retake closer so the page fills the frame."
+
+        /** Below this share of the frame, the page is small enough to be worth a retake. */
+        const val SMALL_PAGE_AREA = 0.45f
     }
 }
