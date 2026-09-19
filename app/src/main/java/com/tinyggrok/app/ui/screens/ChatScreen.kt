@@ -324,12 +324,30 @@ fun ChatScreen(
             .imePadding(),
         topBar = {
             TopAppBar(
-                title = { Text("Tiny Ggrok") },
+                title = {
+                    // The bar can get crowded (Clear and Logs come and go); let the title
+                    // give way gracefully instead of wrapping or clipping mid-letter.
+                    Text("Tiny Ggrok", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                },
                 actions = {
                     if (uiState.messages.isNotEmpty()) {
                         TextButton(onClick = viewModel::clearMessages) {
                             Text("Clear")
                         }
+                    }
+                    // The lens: scan a document. Up here with Voice, the app's other
+                    // capture feature, and well away from the prompt box.
+                    val canScan = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
+                    IconButton(onClick = { launchDocumentScan() }, enabled = canScan) {
+                        Icon(
+                            imageVector = Icons.Outlined.DocumentScanner,
+                            contentDescription = "Scan a document",
+                            tint = if (canScan) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.outline
+                            }
+                        )
                     }
                     TextButton(onClick = onNavigateToVoiceTranslator) {
                         Text("Voice")
@@ -486,17 +504,11 @@ fun ChatScreen(
 
             // Prompt stays editable while a reply is in flight so the user can draft
             // the next question. Send/Resend stay disabled until the current request finishes.
-            // The scanner sits beside the prompt box, not inside it: the box is for text
-            // and its one inline icon attaches an existing image.
             val canAttach = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
             OutlinedTextField(
                 value = uiState.prompt,
                 onValueChange = viewModel::updatePrompt,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
                 label = {
                     Text(
                         when {
@@ -521,22 +533,6 @@ fun ChatScreen(
                     }
                 }
             )
-            IconButton(
-                onClick = { launchDocumentScan() },
-                enabled = canAttach,
-                modifier = Modifier.padding(start = 4.dp, top = 6.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.DocumentScanner,
-                    contentDescription = "Scan a document",
-                    tint = if (canAttach) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.outline
-                    }
-                )
-            }
-            } // prompt row
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

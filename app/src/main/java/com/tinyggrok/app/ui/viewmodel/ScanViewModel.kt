@@ -2,6 +2,7 @@ package com.tinyggrok.app.ui.viewmodel
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,9 +11,12 @@ import com.tinyggrok.app.data.repository.ResolvedAuth
 import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
 import com.tinyggrok.app.data.scan.DocumentCornerDetector
 import com.tinyggrok.app.data.scan.DocumentCorners
+import com.tinyggrok.app.data.scan.LumaImage
 import com.tinyggrok.app.data.scan.NormPoint
+import com.tinyggrok.app.data.scan.locatePage
 import com.tinyggrok.app.data.scan.isPlausibleQuad
 import com.tinyggrok.app.data.scan.loadUprightBitmap
+import com.tinyggrok.app.data.scan.orderCorners
 import com.tinyggrok.app.data.scan.purgeOldScans
 import com.tinyggrok.app.data.scan.refineCorners
 import com.tinyggrok.app.data.scan.saveScanJpeg
@@ -61,9 +65,12 @@ data class ScanUiState(
 }
 
 /**
- * Document scanning without Play services: Grok finds the page, the app tightens the
- * corners onto the real paper edges, and the platform's own perspective transform
- * flattens it. The user can always drag the corners, and detection never blocks them.
+ * Document scanning without Play services. The page is looked for on the phone first,
+ * which settles the everyday case (paper on a desk, floor or carpet) instantly and
+ * offline. Only when that is not confident is Grok asked where the page is. Either way
+ * the corners are then tightened onto the real paper edges and the platform's own
+ * perspective transform flattens the page. The user can always drag the corners, and
+ * detection never blocks them.
  */
 @HiltViewModel
 class ScanViewModel @Inject constructor(
@@ -78,6 +85,14 @@ class ScanViewModel @Inject constructor(
 
     private var detectJob: Job? = null
 
+    /** Grayscale copy of the current photo, built once and reused by every analysis pass. */
+    private var lumaOf: Pair<Bitmap, LumaImage>? = null
+
+    private suspend fun lumaFor(photo: Bitmap): LumaImage {
+        lumaOf?.takeIf { it.first === photo }?.let { return it.second }
+        return withContext(Dispatchers.Default) { photo.toLumaImage() }.also { lumaOf = photo to it }
+    }
+
     /** Set once the user drags, so a late automatic result never overrides their hand. */
     private var userAdjusted = false
 
@@ -85,6 +100,7 @@ class ScanViewModel @Inject constructor(
         detectJob?.cancel()
         userAdjusted = false
         flattened = null
+        lumaOf = null
         _uiState.value = ScanUiState(note = "Opening photo…")
 
         detectJob = viewModelScope.launch {
@@ -105,19 +121,38 @@ class ScanViewModel @Inject constructor(
         }
     }
 
-    /** Ask Grok again, e.g. after a failed attempt or an unwanted manual edit. */
-    fun redetect() {
+    /** Ask Grok where the page is: the explicit "try harder" when the outline is wrong. */
+    fun askGrok() {
         val photo = _uiState.value.photo ?: return
         detectJob?.cancel()
         userAdjusted = false
-        _uiState.value = _uiState.value.copy(phase = ScanPhase.DETECTING, note = FINDING, error = null)
-        detectJob = viewModelScope.launch { detectAndAlign(photo) }
+        _uiState.value = _uiState.value.copy(phase = ScanPhase.DETECTING, note = ASKING_GROK, error = null)
+        detectJob = viewModelScope.launch { alignWithGrok(photo) }
     }
 
     private suspend fun detectAndAlign(photo: Bitmap) {
+        // On the phone first. A light page on a darker surface (or the reverse) is found
+        // in milliseconds; making the user wait on a model call for that is absurd, and
+        // it would fail outright with no network or no key.
+        val luma = lumaFor(photo)
+        val local = withContext(Dispatchers.Default) { locatePage(luma) }
+        if (local != null) {
+            if (userAdjusted) return
+            _uiState.value = _uiState.value.copy(
+                corners = local,
+                phase = ScanPhase.ALIGNED,
+                note = ALIGNED
+            )
+            return
+        }
+        _uiState.value = _uiState.value.copy(note = ASKING_GROK)
+        alignWithGrok(photo)
+    }
+
+    private suspend fun alignWithGrok(photo: Bitmap) {
         val auth = authRepository.resolveAuth()
         if (auth !is ResolvedAuth.Ok) {
-            manual("Add an xAI API key in Settings for automatic edges. Drag the corners, then Snap.")
+            manual("Couldn't find the page. Drag the corners near it, then Snap. (An xAI API key lets Grok look too.)")
             return
         }
         val model = settingsRepository.chatModel.first()
@@ -128,18 +163,15 @@ class ScanViewModel @Inject constructor(
             detector.detect(auth.bearerToken, jpeg, model, debugMode)
         }
         if (rough == null) {
-            manual("Couldn't find the edges automatically. Drag the corners, then Snap.")
+            manual("Couldn't find the page. Drag the corners near it, then Snap.")
             return
         }
         // The model is right about where the page is and loose about exactly where its
         // corners are; this is the step that makes the result square.
-        val aligned = withContext(Dispatchers.Default) { refineCorners(photo.toLumaImage(), rough) }
+        val luma = lumaFor(photo)
+        val aligned = withContext(Dispatchers.Default) { refineCorners(luma, rough) }
         if (userAdjusted) return
-        _uiState.value = _uiState.value.copy(
-            corners = aligned,
-            phase = ScanPhase.ALIGNED,
-            note = "Edges aligned. Drag a corner to adjust."
-        )
+        _uiState.value = _uiState.value.copy(corners = aligned, phase = ScanPhase.ALIGNED, note = ALIGNED)
     }
 
     private fun manual(note: String) {
@@ -171,9 +203,8 @@ class ScanViewModel @Inject constructor(
         val photo = state.photo ?: return
         if (state.phase == ScanPhase.SAVING) return
         viewModelScope.launch {
-            val snapped = withContext(Dispatchers.Default) {
-                refineCorners(photo.toLumaImage(), state.corners)
-            }
+            val luma = lumaFor(photo)
+            val snapped = withContext(Dispatchers.Default) { refineCorners(luma, state.corners) }
             val moved = snapped != state.corners
             _uiState.value = _uiState.value.copy(
                 corners = snapped,
@@ -183,6 +214,38 @@ class ScanViewModel @Inject constructor(
                     "No clear edge nearby. Move the corners closer to the page and try again."
                 }
             )
+        }
+    }
+
+    /**
+     * Turn the photo a quarter turn clockwise, outline and all. A phone held flat over a
+     * page on a desk or floor cannot tell portrait from landscape, so the capture often
+     * arrives sideways; what is shown here is exactly what will be flattened.
+     */
+    fun rotate() {
+        val state = _uiState.value
+        val photo = state.photo ?: return
+        if (!state.canConfirm) return
+        viewModelScope.launch {
+            try {
+                val turned = withContext(Dispatchers.Default) {
+                    Bitmap.createBitmap(
+                        photo, 0, 0, photo.width, photo.height,
+                        Matrix().apply { postRotate(90f) }, true
+                    )
+                }
+                // A point (x, y) lands at (1 - y, x) after a clockwise quarter turn.
+                val corners = orderCorners(state.corners.toList().map { NormPoint(1f - it.y, it.x) })
+                lumaOf = null
+                flattened = null
+                // The previous bitmap is left to the garbage collector: the screen may
+                // still be drawing it this frame, and recycling under it would crash.
+                _uiState.value = _uiState.value.copy(photo = turned, corners = corners)
+            } catch (e: Throwable) {
+                _uiState.value = _uiState.value.copy(
+                    error = "Couldn't rotate: ${e.message ?: e.javaClass.simpleName}"
+                )
+            }
         }
     }
 
@@ -244,10 +307,13 @@ class ScanViewModel @Inject constructor(
         detectJob?.cancel()
         detectJob = null
         flattened = null
+        lumaOf = null
         _uiState.value = ScanUiState()
     }
 
     private companion object {
-        const val FINDING = "Finding the page edges… you can drag the corners meanwhile."
+        const val FINDING = "Finding the page…"
+        const val ASKING_GROK = "Asking Grok to find the page… you can drag the corners meanwhile."
+        const val ALIGNED = "Edges aligned. Drag a corner to adjust."
     }
 }

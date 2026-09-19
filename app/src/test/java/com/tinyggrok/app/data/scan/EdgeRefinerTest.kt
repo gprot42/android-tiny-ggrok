@@ -96,6 +96,25 @@ class EdgeRefinerTest {
     }
 
     @Test
+    fun aFingerHoldingThePageDoesNotTiltTheEdgeItCovers() {
+        // A thumb over the middle of the left edge hides about a fifth of that side. The
+        // stations under it land on skin, not paper; the rest must carry the fit.
+        val clean = render()
+        val data = clean.data.copyOf()
+        val cx = (truth.tl.x + truth.bl.x) / 2f
+        val cy = (truth.tl.y + truth.bl.y) / 2f
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val dx = x / (width - 1f) - cx
+                val dy = (y / (height - 1f) - cy) * height / width
+                if (dx * dx + dy * dy < 0.055f * 0.055f) data[y * width + x] = 0.55f
+            }
+        }
+        val refined = refineCorners(LumaImage(width, height, data), rough)
+        assertTrue("error ${worstError(refined)}", worstError(refined) < 0.004f)
+    }
+
+    @Test
     fun featurelessImageLeavesCornersAlone() {
         val flat = LumaImage(width, height, FloatArray(width * height) { 0.5f })
         assertEquals(rough, refineCorners(flat, rough))

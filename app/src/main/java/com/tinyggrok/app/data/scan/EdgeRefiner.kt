@@ -31,6 +31,32 @@ internal class LumaImage(val width: Int, val height: Int, val data: FloatArray) 
         return top * (1 - fy) + bottom * fy
     }
 
+    /**
+     * Median over a (2r+1) square. Unlike a blur, this removes anything covering less
+     * than half of the window outright instead of smearing it into its surroundings:
+     * print, plank seams, marble veins and carpet speckle all vanish, while the paper
+     * and the surface keep their own brightness right up to the boundary between them.
+     */
+    fun medianFiltered(r: Int): LumaImage {
+        val out = FloatArray(data.size)
+        val window = FloatArray((2 * r + 1) * (2 * r + 1))
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                var n = 0
+                for (dy in -r..r) {
+                    val yy = (y + dy).coerceIn(0, height - 1)
+                    for (dx in -r..r) {
+                        val xx = (x + dx).coerceIn(0, width - 1)
+                        window[n++] = data[yy * width + xx]
+                    }
+                }
+                window.sort(0, n)
+                out[y * width + x] = window[n / 2]
+            }
+        }
+        return LumaImage(width, height, out)
+    }
+
     /** 3x3 box blur: takes the sting out of sensor noise and paper texture. */
     fun blurred(): LumaImage {
         val out = FloatArray(data.size)
@@ -74,11 +100,19 @@ private const val EDGE_MARGIN = 0.12f
 /** How far from the rough edge to look, as a fraction of the image diagonal. */
 private const val SEARCH_RADIUS_FRACTION = 0.045f
 
-/** Weakest brightness step (0..1) accepted as a paper edge. */
-private const val MIN_EDGE_CONTRAST = 0.05f
+/** Depth of the two regions compared across a candidate edge, as a fraction of the diagonal. */
+private const val REGION_DEPTH_FRACTION = 0.012f
 
-/** A step counts as the boundary if it is at least this share of the scanline's sharpest. */
-private const val SIGNIFICANT_STEP_SHARE = 0.25f
+/**
+ * Smallest difference in typical brightness (0..1) between the two regions that counts
+ * as paper-to-surface. Low, because white paper on white marble differs by about 0.05;
+ * safe to keep low only because the statistic is a median (see [probeSide]) and because
+ * a side must also fit one tight straight line before it is believed.
+ */
+private const val MIN_REGION_CONTRAST = 0.035f
+
+/** Refinement corrects an estimate; it must not replace it. Area may change by at most this. */
+private const val MAX_AREA_CHANGE = 0.15f
 
 /** A refined corner may not wander further than this from the rough one. */
 private const val MAX_CORNER_SHIFT_FRACTION = 0.08f
@@ -86,35 +120,88 @@ private const val MAX_CORNER_SHIFT_FRACTION = 0.08f
 /** A refined side may not turn further than this from the rough one (degrees). */
 private const val MAX_EDGE_TURN_DEGREES = 12.0
 
+/** A side needs this share of its stations to agree before it is believed. */
+private const val MIN_INLIER_SHARE = 0.4f
 private const val MIN_SAMPLES_FOR_FIT = 8
+
+/** Largest scatter of stations about the fitted side, as a fraction of the diagonal. */
+private const val MAX_FIT_RMS_FRACTION = 0.004f
+
+/**
+ * One probe across a rough side. [steps] is the robust measure (difference of medians
+ * over deep regions) that says *which* boundary is the paper's. [fine] is a sharp measure
+ * (difference of means over shallow regions) that says *exactly where* it is.
+ */
+private class Station(val origin: Vec, val steps: FloatArray, val fine: FloatArray)
+
+/** Corners after refinement, and how many of the four sides were confirmed on real edges. */
+internal data class Refinement(val corners: DocumentCorners, val confirmedSides: Int)
+
+/** Rows of pixels either side of a position used to pinpoint it once identified. */
+private const val FINE_DEPTH = 3
 
 /**
  * Tighten rough corners onto the real paper edges.
  *
  * A vision model localises the page reliably but only to within a percent or two, and
- * that residual error is exactly what shows up as a tilted scan. The model is weak
- * where classic image analysis is strong, so each side is handled locally: walk along
- * the rough edge, find the strongest brightness step across it at each station, fit a
- * straight line through those steps with outliers dropped, and take the intersections
- * of neighbouring lines as the corners. Fitting a line through dozens of samples is
- * what makes the result straight rather than merely close.
+ * that residual error is exactly what shows up as a tilted scan. So each side is handled
+ * locally: probe across the rough edge at many stations, find where the paper begins at
+ * each, fit a straight line through those points with outliers dropped, and take the
+ * intersections of neighbouring lines as the corners. Fitting a line through dozens of
+ * samples is what makes the result straight rather than merely close.
  *
- * Every stage falls back to the rough value rather than guess: a side with too few
- * confident samples keeps its rough line, a corner that would jump too far stays put.
+ * "Where the paper begins" is judged by comparing the *typical (median) brightness of
+ * two regions* either side of a candidate position. Two earlier versions got this wrong
+ * in instructive ways. Sharpest local step: carpet, wood grain and print are full of
+ * those, and on a speckled carpet the outline drifted outward onto the texture. Mean
+ * brightness of the regions: robust to texture, but print drags a mean down, so on white
+ * marble (where paper and surface barely differ) the block of text became the strongest
+ * boundary and the scan was cropped to it. A median ignores whatever covers less than
+ * half of a region, which is true of print, seams, veins and speckle alike, so the only
+ * thing left that can move it is a change of the surface itself.
+ *
+ * Every stage falls back to the rough value rather than guess: a side whose stations do
+ * not agree on one straight line keeps its rough line, a corner that would jump too far
+ * stays put, and an image with nothing to go on is returned untouched.
  */
-internal fun refineCorners(image: LumaImage, rough: DocumentCorners): DocumentCorners {
+internal fun refineCorners(image: LumaImage, rough: DocumentCorners): DocumentCorners =
+    refineCornersDetailed(image, rough).corners
+
+/**
+ * As [refineCorners], also reporting how many sides were confirmed. A proposed outline
+ * whose sides cannot be confirmed is not lying on paper edges, whatever proposed it.
+ */
+internal fun refineCornersDetailed(image: LumaImage, rough: DocumentCorners): Refinement {
+    val unchanged = Refinement(rough, 0)
     val w = image.width
     val h = image.height
-    if (w < 16 || h < 16) return rough
+    if (w < 16 || h < 16) return unchanged
 
-    val img = image.blurred()
     val diag = hypot(w.toFloat(), h.toFloat())
-    val radius = max(6f, SEARCH_RADIUS_FRACTION * diag)
+    val radius = max(6f, SEARCH_RADIUS_FRACTION * diag).toInt()
+    val depth = max(4f, REGION_DEPTH_FRACTION * diag).toInt()
 
     val corners = rough.toList().map { Vec(it.x * (w - 1), it.y * (h - 1)) }
-    val fitted = (0 until 4).map { i -> fitEdge(img, corners[i], corners[(i + 1) % 4], radius) }
-    // Nothing to go on (blank or hopelessly soft image): hand back exactly what came in.
-    if (fitted.all { it == null }) return rough
+    val sides = (0 until 4).map { i -> probeSide(image, corners[i], corners[(i + 1) % 4], radius, depth) }
+
+    // Is the page brighter or darker than its surroundings? Decided once for the whole
+    // quad, weighted by how decisive each station is, so that texture and print (which
+    // step both ways, weakly) cannot outvote the boundary (which steps one way, strongly).
+    var vote = 0f
+    for (side in sides) {
+        for (station in side?.stations.orEmpty()) {
+            val strongest = station.steps.maxByOrNull { abs(it) } ?: continue
+            if (abs(strongest) >= MIN_REGION_CONTRAST) vote += strongest
+        }
+    }
+    if (vote == 0f) return unchanged
+    val polarity = if (vote > 0f) 1f else -1f
+
+    val maxRms = max(1.5f, MAX_FIT_RMS_FRACTION * diag)
+    val fitted = sides.map { side -> side?.let { fitSide(it, polarity, radius, maxRms) } }
+    // Nothing to go on (blank image, or no page within reach): hand back what came in.
+    val confirmed = fitted.count { it != null }
+    if (confirmed == 0) return unchanged
     val lines = (0 until 4).map { i ->
         fitted[i] ?: Line(corners[i], (corners[(i + 1) % 4] - corners[i]).normalized())
     }
@@ -138,7 +225,13 @@ internal fun refineCorners(image: LumaImage, rough: DocumentCorners): DocumentCo
         br = refined[2].toNorm(w, h),
         bl = refined[3].toNorm(w, h)
     )
-    return if (isPlausibleQuad(result)) result else rough
+    if (!isPlausibleQuad(result)) return unchanged
+    // The rough corners come from something that saw the whole page (a vision model, the
+    // on-device finder, or the user's own hand). A result that disagrees with them about
+    // how big the page is has found a different rectangle, not a better fit of this one.
+    val areaBefore = quadArea(rough)
+    if (areaBefore > 0f && abs(quadArea(result) - areaBefore) / areaBefore > MAX_AREA_CHANGE) return unchanged
+    return Refinement(result, confirmed)
 }
 
 private fun Vec.toNorm(w: Int, h: Int) = NormPoint(
@@ -146,91 +239,174 @@ private fun Vec.toNorm(w: Int, h: Int) = NormPoint(
     (y / (h - 1)).coerceIn(0f, 1f)
 )
 
-/** Find the true edge near the rough side a→b, or null when the evidence is thin. */
-private fun fitEdge(img: LumaImage, a: Vec, b: Vec, radius: Float): Line? {
+private class SideProbe(val dir: Vec, val normal: Vec, val stations: List<Station>)
+
+/**
+ * Probe across the rough side a→b. For every station and every offset along the normal,
+ * record median brightness just inside minus median brightness just outside. The normal
+ * points into the page (corners run clockwise), so a bright page on a dark surface
+ * gives positive steps.
+ */
+private fun probeSide(img: LumaImage, a: Vec, b: Vec, radius: Int, depth: Int): SideProbe? {
     val span = b - a
     if (span.length() < 8f) return null
     val dir = span.normalized()
     val normal = Vec(-dir.y, dir.x)
+    val reach = radius + depth
 
-    val offsets = ArrayList<Float>(SAMPLES_PER_EDGE)
-    val stations = ArrayList<Vec>(SAMPLES_PER_EDGE)
-    for (k in 0 until SAMPLES_PER_EDGE) {
+    val stations = (0 until SAMPLES_PER_EDGE).map { k ->
         val t = EDGE_MARGIN + (1f - 2f * EDGE_MARGIN) * k / (SAMPLES_PER_EDGE - 1)
-        val station = a + span * t
-        val offset = strongestStep(img, station, dir, normal, radius) ?: continue
-        offsets += offset
-        stations += station
-    }
-    if (offsets.size < MIN_SAMPLES_FOR_FIT) return null
+        val origin = a + span * t
 
-    // Drop stations that locked onto something else (text, a shadow, the table edge):
+        // Brightness samples: for each offset across the side, a short run along it.
+        val taps = 5
+        val samples = FloatArray((2 * reach + 1) * taps)
+        for (i in 0..2 * reach) {
+            val across = (i - reach).toFloat()
+            for (k in 0 until taps) {
+                val along = (k - taps / 2) * 2f
+                val p = origin + dir * along + normal * across
+                samples[i * taps + k] = img.at(p.x, p.y)
+            }
+        }
+        val window = FloatArray(depth * taps)
+        fun medianOf(firstRow: Int): Float {
+            System.arraycopy(samples, firstRow * taps, window, 0, window.size)
+            window.sort()
+            return window[window.size / 2]
+        }
+
+        fun meanOf(firstRow: Int, rows: Int): Float {
+            var sum = 0f
+            for (i in firstRow * taps until (firstRow + rows) * taps) sum += samples[i]
+            return sum / (rows * taps)
+        }
+
+        // steps[j] describes a boundary lying between offsets (j - radius - 1) and (j - radius).
+        val steps = FloatArray(2 * radius + 1) { j ->
+            val at = j + depth // row of the first "inside" sample
+            medianOf(at) - medianOf(at - depth)
+        }
+        val fine = FloatArray(2 * radius + 1) { j ->
+            val at = j + depth
+            meanOf(at, FINE_DEPTH) - meanOf(at - FINE_DEPTH, FINE_DEPTH)
+        }
+        Station(origin, steps, fine)
+    }
+    return SideProbe(dir, normal, stations)
+}
+
+/** Fit the true side, or null when the stations do not agree on one straight line. */
+private fun fitSide(side: SideProbe, polarity: Float, radius: Int, maxRms: Float): Line? {
+    val points = ArrayList<Vec>(side.stations.size)
+    val offsets = ArrayList<Float>(side.stations.size)
+    for (station in side.stations) {
+        val offset = boundaryOffset(station, polarity, radius) ?: continue
+        offsets += offset
+        points += station.origin + side.normal * offset
+    }
+    val needed = max(MIN_SAMPLES_FOR_FIT, (MIN_INLIER_SHARE * side.stations.size).toInt())
+    if (offsets.size < needed) return null
+
+    // Drop stations that locked onto something else (a shadow, the table edge, a fold):
     // anything far from the median offset, measured against the typical spread.
     val median = offsets.sorted()[offsets.size / 2]
     val mad = offsets.map { abs(it - median) }.sorted()[offsets.size / 2]
     val tolerance = max(2.5f, 3f * mad)
-    val points = offsets.indices
-        .filter { abs(offsets[it] - median) <= tolerance }
-        .map { stations[it] + normal * offsets[it] }
-    if (points.size < MIN_SAMPLES_FOR_FIT) return null
+    var inliers = points.indices.filter { abs(offsets[it] - median) <= tolerance }.map { points[it] }
+    if (inliers.size < needed) return null
 
-    val line = leastSquaresLine(points) ?: return null
+    var line = leastSquaresLine(inliers) ?: return null
+
+    // Refit on the stations that agree closely with the first fit. Wherever something
+    // interrupts the edge (a finger, a paperclip, a dog-ear, a dark band of print running
+    // into a dark desk) the stations there land a few pixels off: too near to be thrown
+    // out above, yet bunched together, so they lever the line round. Clean stations agree
+    // to a fraction of a pixel, which makes the two populations easy to tell apart.
+    repeat(2) {
+        val normal = Vec(-line.dir.y, line.dir.x)
+        val residuals = inliers.map { abs((it - line.point).dot(normal)) }
+        val typical = residuals.sorted()[residuals.size / 2]
+        val limit = max(0.75f, 2.5f * typical)
+        val kept = inliers.indices.filter { residuals[it] <= limit }.map { inliers[it] }
+        if (kept.size < needed || kept.size == inliers.size) return@repeat
+        inliers = kept
+        line = leastSquaresLine(kept) ?: return null
+    }
+
+    // Stations scattered at random (texture, no real boundary in reach) still produce
+    // *a* line. A real paper edge produces a tight one; insist on that.
+    val lineNormal = Vec(-line.dir.y, line.dir.x)
+    val rms = sqrt(inliers.sumOf { ((it - line.point).dot(lineNormal)).toDouble().let { d -> d * d } } / inliers.size)
+    if (rms > maxRms) return null
 
     // A fit that swings away from the rough side has latched onto a different feature.
-    val cos = abs(line.dir.dot(dir)).coerceIn(0f, 1f)
+    val cos = abs(line.dir.dot(side.dir)).coerceIn(0f, 1f)
     if (Math.toDegrees(acos(cos).toDouble()) > MAX_EDGE_TURN_DEGREES) return null
     return line
 }
 
 /**
- * Offset along [normal] (pixels, relative to [station]) of the paper boundary, or null
- * if nothing on this scanline is sharp enough to be paper against desk.
+ * Offset (pixels along the inward normal) of the paper boundary at one station, or null
+ * if no position there separates two regions of clearly different brightness.
  *
- * The boundary is taken to be the *outermost* significant step, not the strongest one.
- * Print is often higher contrast than paper-on-desk, and a heading or ruled line that
- * runs parallel to the page edge would otherwise outvote it at most stations. The page
- * encloses its content, so walking inward from outside meets the boundary first.
- * [normal] points into the page (corners are clockwise), so negative offsets are outside.
+ * Two stages, because robust and precise pull in opposite directions. A median ignores
+ * anything covering under half of its region, which is what makes it immune to print and
+ * texture, but for the same reason it reads the same across a band as wide as the region
+ * is deep: it identifies the boundary without locating it. So the median picks the band,
+ * and within that band the sharp measure picks the pixel.
  */
-private fun strongestStep(
-    img: LumaImage,
-    station: Vec,
-    dir: Vec,
-    normal: Vec,
-    radius: Float
-): Float? {
-    val r = radius.toInt()
-    val profile = FloatArray(2 * r + 1)
-    var peak = 0f
-    for (i in profile.indices) {
-        val s = (i - r).toFloat()
-        // Difference across the edge, averaged over three taps along it to beat noise.
-        var contrast = 0f
-        for (along in -2..2 step 2) {
-            val p = station + dir * along.toFloat() + normal * s
-            val ahead = p + normal * 1.5f
-            val behind = p - normal * 1.5f
-            contrast += abs(img.at(ahead.x, ahead.y) - img.at(behind.x, behind.y))
+private fun boundaryOffset(station: Station, polarity: Float, radius: Int): Float? {
+    val steps = station.steps
+    var best = -1
+    var bestScore = 0f
+    for (j in steps.indices) {
+        val contrast = polarity * steps[j]
+        if (contrast < MIN_REGION_CONTRAST) continue
+        // Mild preference for positions near the rough side.
+        val score = contrast * (1f - 0.25f * abs(j - radius) / radius)
+        if (score > bestScore) {
+            bestScore = score
+            best = j
         }
-        profile[i] = contrast / 3f
-        if (profile[i] > peak) peak = profile[i]
     }
-    if (peak < MIN_EDGE_CONTRAST) return null
+    if (best < 0) return null
 
-    // First step from the outside that is a meaningful share of the sharpest one here.
-    val threshold = max(MIN_EDGE_CONTRAST, SIGNIFICANT_STEP_SHARE * peak)
-    var i = 0
-    while (i < profile.size && profile[i] < threshold) i++
-    if (i >= profile.size) return null
-    // Climb to the top of that step rather than stopping on its leading slope.
-    while (i + 1 < profile.size && profile[i + 1] > profile[i]) i++
+    // A median flips once half its region has crossed the boundary, so its reading is
+    // flat for the same distance either side of the true edge and falls away sharply
+    // beyond. The middle of that flat stretch is therefore the edge, and unlike any
+    // sharp measure it cannot be pulled by thin clutter nearby (a marble vein, a seam).
+    // Half the best reading marks the ends: wood grain makes the top wobble by a
+    // quarter, which a tighter level would mistake for the end of the stretch.
+    val level = 0.5f * polarity * steps[best]
+    var first = best
+    var last = best
+    while (first > 0 && polarity * steps[first - 1] >= level) first--
+    while (last < steps.size - 1 && polarity * steps[last + 1] >= level) last++
+    val centre = (first + last) / 2f
+
+    // Then pinpoint within a few pixels of that centre: enough to absorb the small bias
+    // that content printed right up to the paper's edge puts on the centre, too little to
+    // reach a neighbouring feature. Inside that window take the *outermost* strong step,
+    // not the strongest: a page's edge lies outside its own print by definition, and
+    // full-bleed print is often higher contrast than paper against desk.
+    val reachFine = max(2, (last - first) / 4)
+    val lo = max(0, centre.toInt() - reachFine)
+    val hi = min(steps.size - 1, centre.toInt() + reachFine + 1)
+
+    val fine = station.fine
+    var strongest = 0f
+    for (j in lo..hi) strongest = max(strongest, polarity * fine[j])
+    var at = lo
+    while (at < hi && polarity * fine[at] < 0.6f * strongest) at++
+    while (at < hi && polarity * fine[at + 1] > polarity * fine[at]) at++
 
     // Sub-pixel position from a parabola through the peak and its neighbours.
-    var offset = (i - r).toFloat()
-    if (i in 1 until profile.size - 1) {
-        val a = profile[i - 1]
-        val b = profile[i]
-        val c = profile[i + 1]
+    var offset = (at - radius).toFloat() - 0.5f
+    if (at in 1 until fine.size - 1) {
+        val a = polarity * fine[at - 1]
+        val b = polarity * fine[at]
+        val c = polarity * fine[at + 1]
         val curvature = a - 2f * b + c
         if (abs(curvature) > 1e-6f) offset += (0.5f * (a - c) / curvature).coerceIn(-1f, 1f)
     }

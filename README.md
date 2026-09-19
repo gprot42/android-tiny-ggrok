@@ -27,25 +27,30 @@ A lightweight native Android app for chatting with xAI's Grok models.
 - **Streaming** Responses API (SSE) for chat + `web_search`, with HTTP/2 pings, so long reasoning/search does not hit “Timed out contacting api.x.ai”
 - **Network resilience** (see [Network resilience](#network-resilience)): DNS-over-HTTPS fallback when the network's resolver can't find `api.x.ai`, IPv4-first connects, short connect timeout with up to 3 attempts, and an instant “offline” message instead of a long stall
 - **Faster sends**: the TLS connection to `api.x.ai` is opened when the app starts / you begin typing, GPS waits at most 3 s at send time (falls back to the cached fix), and chat history sent as context is capped by size
-- **Document scanner, no Google Play services**: tap the scan icon beside the prompt box, photograph a page with your phone's own camera app, and the page is found, squared up and attached. Grok's vision locates the page; the app then tightens the corners onto the real paper edges on-device and flattens it with Android's built-in perspective transform. Corners stay draggable, and **Snap** re-aligns them to the nearest paper edge. See [Document scanner](#document-scanner)
+- **Document scanner, no Google Play services**: tap the scan icon in the top bar, photograph a page with your phone's own camera app, and the page is found, squared up and ready to attach or share. The page is located on the phone when it can be (instantly, offline) and by Grok's vision when it cannot; the corners are then tightened onto the real paper edges and the page is flattened with Android's built-in perspective transform. Corners stay draggable, and **Snap** re-aligns them to the nearest paper edge. See [Document scanner](#document-scanner)
 - **Never stuck waiting**: **Stop** cancels a reply that is taking too long, typing while a reply arrives queues your next prompt (it sends itself when the current one lands), and **Clear** also stops anything in flight
 - **Live replies**: the answer streams onto the screen as Grok writes it, with a **Searching the web** status while it looks things up, instead of a motionless indicator until the whole reply lands
 - **Reasoning effort tuned per question**: ordinary questions use `low` effort (the API default is `high`, which spends tens of seconds thinking before the first token); rail/transit questions keep `high`. Agentic tool turns are capped so a vague question cannot loop through searches indefinitely
 
 ## Document scanner
 
-Built to work without Google Play services, ML Kit or OpenCV.
+Built to work without Google Play services, ML Kit or OpenCV. Tap the scan icon in the top bar.
 
 1. **Capture** uses a plain camera intent, so any camera app works (including on de-Googled phones) and Tiny Ggrok needs no camera permission.
-2. **Find the page.** A reduced copy of the photo (about 1024 px) goes to Grok, which returns the four corners. This is the part classic edge detection is bad at: telling a page from a cluttered desk.
-3. **Make it straight.** A vision model is only accurate to a percent or two, which shows up as a tilted scan. So the app then walks along each rough edge on-device, finds the real paper boundary at dozens of points, fits a straight line through them (ignoring outliers such as printed lines), and uses the line intersections as the corners.
-4. **Flatten.** Android's own four-point perspective transform maps the page to an upright rectangle, up to 2048 px on the long side so small print stays legible.
+2. **Find the page, on the phone first.** A light page on a darker surface, or the reverse, is located in milliseconds with no network: shrink and median-filter the photo until texture and print drop out, split it into two brightness classes, and reduce the page region's outline to four corners. The proposal is only accepted if at least three of its sides turn out to lie on real, straight paper edges, so a tidy-looking shape produced by uneven lighting is thrown out.
+3. **Ask Grok when that is not confident**, for example white paper on white marble, or a cluttered scene. A reduced copy of the photo (about 1024 px) goes to Grok, which returns the four corners. **Ask Grok** in the scanner forces this.
+4. **Make it straight.** Whichever route found the page, it is only accurate to a percent or so, which shows up as a tilted scan. So the app walks along each rough edge, works out where the paper begins at dozens of points, fits a straight line through them, and uses the line intersections as the corners.
+5. **Flatten.** Android's own four-point perspective transform maps the page to an upright rectangle, up to 2048 px on the long side so small print stays legible.
+
+"Where the paper begins" is judged by comparing the **median** brightness of a region just inside a candidate position with one just outside it. That choice was earned the hard way. Looking for the sharpest local step drifted onto carpet speckle. Comparing region *means* survived texture but cropped a scan to its block of text on white marble, because print drags a mean down. A median ignores anything covering less than half of a region, which is true of print, plank seams, marble veins and carpet pile alike. The median identifies the right boundary; a sharp local measure then pinpoints it; and the line is refitted after dropping points that disagree, so a finger on the page or a dog-eared corner does not tilt the edge it interrupts.
+
+Tested on synthetic dark wood, pale wood, white marble, dark granite, concrete and carpet, in even light and lit from one side, each with its most misleading feature (seams, grain, veins, speckle, contact shadow). All land within 0.3% of the frame.
 
 Once the page is aligned there are two places it can go. **To prompt** attaches it to your message to Grok. **Share** sends the straightened JPEG through Android's share sheet to any app that accepts an image, such as Signal, Telegram or your email app (the file name becomes the email subject). Share leaves the scanner open, so one scan can go to another app and into the prompt without scanning twice.
 
-You can drag any corner, tap **Snap** to pull the current corners onto the nearest paper edges, or **Auto** to ask Grok again. If there is no API key or no network, steps 1, 3 and 4 still work with hand-placed corners.
+You can drag any corner, tap **Snap** to pull the current corners onto the nearest paper edges, and **Rotate** to turn the photo a quarter turn: a phone held flat over a page cannot tell portrait from landscape, so captures often arrive sideways.
 
-Privacy and cost: finding the page sends that one reduced photo to xAI, billed like any small image prompt. Everything else happens on the phone.
+Privacy and cost: most scans never leave the phone until you send them. Only when Grok is asked does one reduced photo go to xAI, billed like any small image prompt.
 
 ## Network resilience
 

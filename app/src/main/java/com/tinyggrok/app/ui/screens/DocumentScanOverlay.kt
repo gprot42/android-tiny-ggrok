@@ -108,10 +108,8 @@ fun DocumentScanOverlay(
                     state.phase == ScanPhase.SAVING
                 ) {
                     CircularProgressIndicator(
-                        modifier = Modifier
-                            .size(18.dp)
-                            .padding(end = 2.dp),
-                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.5.dp,
                         color = Color.White
                     )
                 }
@@ -151,13 +149,17 @@ fun DocumentScanOverlay(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(
-                    onClick = viewModel::redetect,
-                    enabled = state.canConfirm && state.phase != ScanPhase.DETECTING
-                ) { Text("Auto", maxLines = 1, softWrap = false) }
+                    onClick = viewModel::rotate,
+                    enabled = state.canConfirm
+                ) { Text("Rotate", maxLines = 1, softWrap = false) }
                 TextButton(
                     onClick = viewModel::snapToEdges,
                     enabled = state.canConfirm
                 ) { Text("Snap", maxLines = 1, softWrap = false) }
+                TextButton(
+                    onClick = viewModel::askGrok,
+                    enabled = state.canConfirm && state.phase != ScanPhase.DETECTING
+                ) { Text("Ask Grok", maxLines = 1, softWrap = false) }
             }
 
             // Where the aligned page goes. Share leaves the scanner open, so one scan can
