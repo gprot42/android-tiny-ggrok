@@ -22,12 +22,14 @@ import com.tinyggrok.app.data.share.IncomingShare
 import com.tinyggrok.app.data.share.IncomingShareRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
@@ -334,6 +336,42 @@ class ChatViewModel @Inject constructor(
 
     /** Convenience for single-image callers (e.g. share intents). */
     fun attachImage(uri: Uri) = attachImages(listOf(uri))
+
+    /**
+     * Attach a page from the document scanner. The scanner has already sized and
+     * encoded it for legible print, so the file is sent as is: pushing it through the
+     * photo path would shrink it to the photo ceiling and recompress it, which is
+     * exactly what makes small text unreadable.
+     */
+    fun attachScannedPage(uri: Uri) {
+        viewModelScope.launch {
+            val current = _uiState.value.attachedImages
+            if (current.size >= MAX_ATTACHED_IMAGES) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "You can attach up to $MAX_ATTACHED_IMAGES images."
+                )
+                return@launch
+            }
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalArgumentException("Cannot open scanned page")
+                }
+                val page = AttachedImage(
+                    uri = uri,
+                    base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                )
+                _uiState.value = _uiState.value.copy(
+                    attachedImages = _uiState.value.attachedImages + page,
+                    errorMessage = null
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "Failed to attach scan: ${e.message ?: "unknown error"}"
+                )
+            }
+        }
+    }
 
     fun removeImage(uri: Uri) {
         _uiState.value = _uiState.value.copy(

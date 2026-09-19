@@ -27,9 +27,23 @@ A lightweight native Android app for chatting with xAI's Grok models.
 - **Streaming** Responses API (SSE) for chat + `web_search`, with HTTP/2 pings, so long reasoning/search does not hit “Timed out contacting api.x.ai”
 - **Network resilience** (see [Network resilience](#network-resilience)): DNS-over-HTTPS fallback when the network's resolver can't find `api.x.ai`, IPv4-first connects, short connect timeout with up to 3 attempts, and an instant “offline” message instead of a long stall
 - **Faster sends**: the TLS connection to `api.x.ai` is opened when the app starts / you begin typing, GPS waits at most 3 s at send time (falls back to the cached fix), and chat history sent as context is capped by size
+- **Document scanner, no Google Play services**: tap the scan icon in the prompt box, photograph a page with your phone's own camera app, and the page is found, squared up and attached. Grok's vision locates the page; the app then tightens the corners onto the real paper edges on-device and flattens it with Android's built-in perspective transform. Corners stay draggable, and **Snap** re-aligns them to the nearest paper edge. See [Document scanner](#document-scanner)
 - **Never stuck waiting**: **Stop** cancels a reply that is taking too long, typing while a reply arrives queues your next prompt (it sends itself when the current one lands), and **Clear** also stops anything in flight
 - **Live replies**: the answer streams onto the screen as Grok writes it, with a **Searching the web** status while it looks things up, instead of a motionless indicator until the whole reply lands
 - **Reasoning effort tuned per question**: ordinary questions use `low` effort (the API default is `high`, which spends tens of seconds thinking before the first token); rail/transit questions keep `high`. Agentic tool turns are capped so a vague question cannot loop through searches indefinitely
+
+## Document scanner
+
+Built to work without Google Play services, ML Kit or OpenCV.
+
+1. **Capture** uses a plain camera intent, so any camera app works (including on de-Googled phones) and Tiny Ggrok needs no camera permission.
+2. **Find the page.** A reduced copy of the photo (about 1024 px) goes to Grok, which returns the four corners. This is the part classic edge detection is bad at: telling a page from a cluttered desk.
+3. **Make it straight.** A vision model is only accurate to a percent or two, which shows up as a tilted scan. So the app then walks along each rough edge on-device, finds the real paper boundary at dozens of points, fits a straight line through them (ignoring outliers such as printed lines), and uses the line intersections as the corners.
+4. **Flatten.** Android's own four-point perspective transform maps the page to an upright rectangle, up to 2048 px on the long side so small print stays legible.
+
+You can drag any corner, tap **Snap** to pull the current corners onto the nearest paper edges, or **Auto** to ask Grok again. If there is no API key or no network, steps 1, 3 and 4 still work with hand-placed corners.
+
+Privacy and cost: finding the page sends that one reduced photo to xAI, billed like any small image prompt. Everything else happens on the phone.
 
 ## Network resilience
 

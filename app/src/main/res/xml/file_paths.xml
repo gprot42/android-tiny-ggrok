@@ -2,4 +2,6 @@
 <paths>
     <cache-path name="voice_audio" path="voice_audio/" />
     <cache-path name="shared_inbox" path="shared_inbox/" />
+    <!-- Camera captures and straightened pages for the document scanner -->
+    <cache-path name="scans" path="scans/" />
 </paths>

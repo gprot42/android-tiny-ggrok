@@ -12,9 +12,13 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import com.tinyggrok.app.data.scan.scanDirectory
+import java.io.File
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -32,6 +36,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,11 +56,13 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.DocumentScanner
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -79,6 +86,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -104,8 +112,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.tinyggrok.app.data.share.formatConversationForShare
@@ -172,6 +178,38 @@ fun ChatScreen(
             viewModel.attachImages(uris)
         }
     }
+
+    // Document scanner. The photo is taken by whatever camera app the phone has, via a
+    // plain capture intent: no Play services, and no CAMERA permission for this app.
+    // Saved across recreation because the camera can push this activity out of memory.
+    var pendingCapture by rememberSaveable { mutableStateOf<Uri?>(null) }
+    var photoToScan by rememberSaveable { mutableStateOf<Uri?>(null) }
+    val documentCamera = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { saved: Boolean ->
+        if (saved) photoToScan = pendingCapture
+        pendingCapture = null
+    }
+
+    fun launchDocumentScan() {
+        try {
+            val file = File(scanDirectory(context), "capture_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(context, "com.tinyggrok.app.fileprovider", file)
+            pendingCapture = uri
+            documentCamera.launch(uri)
+        } catch (e: Exception) {
+            pendingCapture = null
+            Toast.makeText(
+                context,
+                "No camera app available to take the photo.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    // Image opened full screen from a sent message. Hoisted to the screen root so it
+    // can be drawn as a layer over everything (see the root Box below).
+    var imageToView by remember { mutableStateOf<Uri?>(null) }
 
     // Ask for location once when GPS is on and the user sends (then send either way).
     var locationPermissionAsked by remember { mutableStateOf(false) }
@@ -275,6 +313,11 @@ fun ChatScreen(
         }
     }
 
+    // Full-screen layers (scanner, image viewer) are drawn in this Box over the chat
+    // rather than in Dialog windows. A Compose Dialog that fills the screen is measured
+    // against the whole display while its window starts below the status bar, so the
+    // bottom of its content, where buttons live, falls off the edge.
+    Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
@@ -392,6 +435,7 @@ fun ChatScreen(
                                         webViewHeights[message.id] = h
                                     }
                                 },
+                                onOpenImage = { imageToView = it },
                                 onShare = { msg ->
                                     startPlainTextShare(
                                         context,
@@ -459,24 +503,43 @@ fun ChatScreen(
                 maxLines = 4,
                 enabled = true,
                 trailingIcon = {
-                    IconButton(
-                        onClick = { imagePicker.launch("image/*") },
-                        enabled = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Image,
-                            contentDescription = "Attach images"
-                        )
+                    val canAttach = uiState.attachedImages.size < MAX_ATTACHED_IMAGES
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = { launchDocumentScan() },
+                            enabled = canAttach
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.DocumentScanner,
+                                contentDescription = "Scan a document"
+                            )
+                        }
+                        IconButton(
+                            onClick = { imagePicker.launch("image/*") },
+                            enabled = canAttach
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Image,
+                                contentDescription = "Attach images"
+                            )
+                        }
                     }
                 }
             )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // Secondary actions scroll sideways when they do not fit; Send stays
+                // pinned outside the scroller. With large system fonts this row used to
+                // overflow and push Send off the edge of the screen entirely.
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     TextButton(onClick = onNavigateToHistory) {
                         Text("History")
                     }
@@ -491,10 +554,8 @@ fun ChatScreen(
                     ) {
                         Text("Share")
                     }
-                }
 
-                // Right side: prompt actions
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Prompt actions
                     val copyText = uiState.prompt.ifEmpty { uiState.lastSentPrompt }
                     TextButton(
                         onClick = {
@@ -531,17 +592,37 @@ fun ChatScreen(
                     ) {
                         Text("Clear")
                     }
-                    Button(
-                        onClick = { sendWithOptionalLocationPermission() },
-                        modifier = Modifier.padding(start = 8.dp),
-                        enabled = uiState.canSend
-                    ) {
-                        Text(if (uiState.isSending) "Queue" else "Send")
-                    }
+                }
+                Button(
+                    onClick = { sendWithOptionalLocationPermission() },
+                    modifier = Modifier.padding(start = 8.dp),
+                    enabled = uiState.canSend
+                ) {
+                    Text(
+                        text = if (uiState.isSending) "Queue" else "Send",
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
             }
         }
     }
+
+    imageToView?.let { uri ->
+        ImageViewerOverlay(uri = uri, onDismiss = { imageToView = null })
+    }
+
+    photoToScan?.let { photo ->
+        DocumentScanOverlay(
+            photoUri = photo,
+            onDismiss = { photoToScan = null },
+            onScanned = { page ->
+                viewModel.attachScannedPage(page)
+                photoToScan = null
+            }
+        )
+    }
+    } // root Box
 }
 
 /** A prompt waiting for the current reply to finish, with a way to take it back. */
@@ -741,18 +822,11 @@ private fun MessageItem(
     fontSize: Float,
     cachedWebViewHeightPx: Int = 0,
     onWebViewHeight: (Int) -> Unit = {},
+    onOpenImage: (Uri) -> Unit = {},
     onShare: ((ChatUiMessage) -> Unit)? = null
 ) {
     val clipboard = LocalClipboardManager.current
     val isAssistant = message.role == "assistant"
-    // Full-screen viewer for one of this message's images. A Dialog, so it sits above
-    // the chat and is unaffected by the screen's pinch-zoom transform.
-    var viewerUri by remember(message.id) { mutableStateOf<Uri?>(null) }
-
-    viewerUri?.let { uri ->
-        ImageViewerDialog(uri = uri, onDismiss = { viewerUri = null })
-    }
-
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -818,7 +892,7 @@ private fun MessageItem(
         if (message.hasImage && !isAssistant) {
             SentImagesRow(
                 uris = message.imageUris,
-                onOpen = { viewerUri = it }
+                onOpen = onOpenImage
             )
         }
         if (isAssistant) {
@@ -899,70 +973,67 @@ private fun SentImagesRow(
 
 /** Full-screen image viewer: pinch to zoom, drag to pan, tap to close. */
 @Composable
-private fun ImageViewerDialog(uri: Uri, onDismiss: () -> Unit) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        var scale by remember { mutableFloatStateOf(1f) }
-        var offset by remember { mutableStateOf(Offset.Zero) }
+private fun ImageViewerOverlay(uri: Uri, onDismiss: () -> Unit) {
+    var scale by remember(uri) { mutableFloatStateOf(1f) }
+    var offset by remember(uri) { mutableStateOf(Offset.Zero) }
 
-        Box(
+    BackHandler(onBack = onDismiss)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.94f))
+            .pointerInput(Unit) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(1f, 6f)
+                    scale = newScale
+                    // Panning only means anything while zoomed in.
+                    offset = if (newScale <= 1f) Offset.Zero else offset + pan
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = {
+                        // Tapping while zoomed would close by accident; reset instead.
+                        if (scale > 1f) {
+                            scale = 1f
+                            offset = Offset.Zero
+                        } else {
+                            onDismiss()
+                        }
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        val fallback = rememberVectorPainter(Icons.Outlined.Image)
+        AsyncImage(
+            model = uri,
+            contentDescription = "Attached image",
+            contentScale = ContentScale.Fit,
+            error = fallback,
+            fallback = fallback,
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.94f))
-                .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        val newScale = (scale * zoom).coerceIn(1f, 6f)
-                        scale = newScale
-                        // Panning only means anything while zoomed in.
-                        offset = if (newScale <= 1f) Offset.Zero else offset + pan
-                    }
+                .padding(12.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
                 }
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = {
-                            // Tapping while zoomed would close by accident; reset instead.
-                            if (scale > 1f) {
-                                scale = 1f
-                                offset = Offset.Zero
-                            } else {
-                                onDismiss()
-                            }
-                        }
-                    )
-                },
-            contentAlignment = Alignment.Center
+        )
+        IconButton(
+            onClick = onDismiss,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
         ) {
-            val fallback = rememberVectorPainter(Icons.Outlined.Image)
-            AsyncImage(
-                model = uri,
-                contentDescription = "Attached image",
-                contentScale = ContentScale.Fit,
-                error = fallback,
-                fallback = fallback,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp)
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
-                    }
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Close image",
+                tint = Color.White
             )
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "Close image",
-                    tint = Color.White
-                )
-            }
         }
     }
 }
