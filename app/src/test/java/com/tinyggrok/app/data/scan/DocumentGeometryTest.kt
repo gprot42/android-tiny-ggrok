@@ -152,6 +152,50 @@ class DocumentGeometryTest {
     }
 
     @Test
+    fun insetMovesEverySideByTheSameNumberOfPixels() {
+        val box = DocumentCorners(
+            NormPoint(0.1f, 0.2f), NormPoint(0.9f, 0.2f), NormPoint(0.9f, 0.8f), NormPoint(0.1f, 0.8f)
+        )
+        val inner = insetQuad(box, width = 1000f, height = 2000f, insetPx = 10f)
+        // 10 px is 0.010 of a 1000 px width but 0.005 of a 2000 px height.
+        assertPoint(NormPoint(0.11f, 0.205f), inner.tl)
+        assertPoint(NormPoint(0.89f, 0.795f), inner.br)
+    }
+
+    @Test
+    fun insetOfATiltedQuadStaysParallelAndInside() {
+        val tilted = DocumentCorners(
+            NormPoint(0.12f, 0.10f), NormPoint(0.88f, 0.16f), NormPoint(0.92f, 0.90f), NormPoint(0.08f, 0.84f)
+        )
+        val w = 1500f
+        val h = 2000f
+        val inner = insetQuad(tilted, w, h, insetPx = 12f)
+        val outer = tilted.toList()
+        val moved = inner.toList()
+        for (i in 0 until 4) {
+            // Each new corner lies exactly 12 px inside both of the old sides that met there.
+            for (side in listOf(i, (i + 3) % 4)) {
+                val a = outer[side]
+                val b = outer[(side + 1) % 4]
+                val len = kotlin.math.hypot((b.x - a.x) * w, (b.y - a.y) * h)
+                val dist = ((b.x - a.x) * w * (moved[i].y - a.y) * h - (b.y - a.y) * h * (moved[i].x - a.x) * w) / len
+                assertEquals("corner $i from side $side", 12f, dist, 0.05f)
+            }
+        }
+        assertTrue(isPlausibleQuad(inner))
+        assertTrue(quadArea(inner) < quadArea(tilted))
+    }
+
+    @Test
+    fun anInsetThatWouldCollapseTheQuadIsIgnored() {
+        val small = DocumentCorners(
+            NormPoint(0.40f, 0.40f), NormPoint(0.60f, 0.40f), NormPoint(0.60f, 0.60f), NormPoint(0.40f, 0.60f)
+        )
+        assertEquals(small, insetQuad(small, 100f, 100f, insetPx = 40f))
+        assertEquals(small, insetQuad(small, 100f, 100f, insetPx = 0f))
+    }
+
+    @Test
     fun withCornerReplacesOnlyThatCorner() {
         val moved = DocumentCorners.DEFAULT.withCorner(2, NormPoint(0.5f, 0.5f))
         assertEquals(NormPoint(0.5f, 0.5f), moved.br)

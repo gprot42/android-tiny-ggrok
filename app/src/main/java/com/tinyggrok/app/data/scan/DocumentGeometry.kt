@@ -62,6 +62,44 @@ internal fun NormPoint.turnedClockwise(degrees: Int): NormPoint = when (quarterT
 internal fun NormPoint.beforeTurningClockwise(degrees: Int): NormPoint =
     turnedClockwise(360 - quarterTurns(degrees) * 90)
 
+/**
+ * Move every side of a clockwise quad inward by [insetPx], in pixels of a [width] x
+ * [height] image, and return the corners where the moved sides meet.
+ *
+ * Sides are moved parallel to themselves rather than the quad being scaled about its
+ * centre, so the same few pixels come off each edge however long or tilted it is. Returns
+ * the input unchanged if the inset would collapse or fold the quad.
+ */
+internal fun insetQuad(corners: DocumentCorners, width: Float, height: Float, insetPx: Float): DocumentCorners {
+    if (insetPx <= 0f) return corners
+    val p = corners.toList().map { floatArrayOf(it.x * width, it.y * height) }
+    val origin = ArrayList<FloatArray>(4)
+    val dir = ArrayList<FloatArray>(4)
+    for (i in 0 until 4) {
+        val a = p[i]
+        val b = p[(i + 1) % 4]
+        val len = hypot(b[0] - a[0], b[1] - a[1])
+        if (len < 1e-3f) return corners
+        val d = floatArrayOf((b[0] - a[0]) / len, (b[1] - a[1]) / len)
+        // Corners run clockwise with y pointing down, so (-dy, dx) points into the quad.
+        origin += floatArrayOf(a[0] - d[1] * insetPx, a[1] + d[0] * insetPx)
+        dir += d
+    }
+    val moved = (0 until 4).map { i ->
+        val j = (i + 3) % 4 // corner i is where side i-1 meets side i
+        val cross = dir[j][0] * dir[i][1] - dir[j][1] * dir[i][0]
+        if (abs(cross) < 1e-5f) return corners
+        val dx = origin[i][0] - origin[j][0]
+        val dy = origin[i][1] - origin[j][1]
+        val t = (dx * dir[i][1] - dy * dir[i][0]) / cross
+        NormPoint((origin[j][0] + dir[j][0] * t) / width, (origin[j][1] + dir[j][1] * t) / height)
+    }
+    val result = DocumentCorners(moved[0], moved[1], moved[2], moved[3])
+    // Still a sensible, clockwise quad of nearly the same size?
+    val keptArea = quadArea(result) / max(quadArea(corners), 1e-9f)
+    return if (isPlausibleQuad(result) && keptArea > 0.5f && keptArea <= 1f) result else corners
+}
+
 /** Smallest share of the photo a detected page may cover before we distrust it. */
 private const val MIN_AREA_FRACTION = 0.05f
 

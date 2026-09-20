@@ -39,6 +39,23 @@ internal const val SCAN_OUTPUT_MAX_SIDE = 3508
  */
 internal const val SCAN_PROMPT_MAX_SIDE = 2048
 
+/**
+ * How far inside the detected outline the page is actually cut, as a fraction of its
+ * shorter side. The outline is fitted to the *middle* of the paper's slightly blurred
+ * edge, so cutting exactly on it keeps half of that edge and a sliver of desk: measured on
+ * a real scan, a dark rim three to four pixels thick on every side. Small enough that no
+ * document's margin notices.
+ */
+private const val TRIM_FRACTION = 0.004f
+
+/** The outline moved inward by the trim, in an image of the given size. */
+private fun trimmed(corners: DocumentCorners, width: Int, height: Int): DocumentCorners {
+    val p = corners.toList()
+    fun side(i: Int, j: Int) = hypot((p[i].x - p[j].x) * width, (p[i].y - p[j].y) * height)
+    val shorter = min(min(side(0, 1), side(3, 2)), min(side(0, 3), side(1, 2)))
+    return insetQuad(corners, width.toFloat(), height.toFloat(), max(2f, TRIM_FRACTION * shorter))
+}
+
 /** Most pixels decoded from the capture for one flatten (about 96 MB as ARGB). */
 private const val MAX_REGION_PIXELS = 24_000_000L
 
@@ -140,7 +157,9 @@ internal fun flattenFromCapture(
 ): Bitmap {
     val w = capture.storedWidth
     val h = capture.storedHeight
-    val stored = corners.toList().map { it.beforeTurningClockwise(turned) }
+    // Carried back onto the stored image (a turn keeps the corners clockwise), then trimmed.
+    val onStored = corners.toList().map { it.beforeTurningClockwise(turned) }
+    val stored = trimmed(DocumentCorners(onStored[0], onStored[1], onStored[2], onStored[3]), w, h).toList()
     val xs = stored.map { it.x * w }
     val ys = stored.map { it.y * h }
 
@@ -240,9 +259,10 @@ internal fun warpDocument(
     corners: DocumentCorners,
     maxSide: Int = SCAN_OUTPUT_MAX_SIDE
 ): Bitmap {
-    val (outW, outH) = flattenedSize(corners, src.width, src.height, maxSide)
+    val cut = trimmed(corners, src.width, src.height)
+    val (outW, outH) = flattenedSize(cut, src.width, src.height, maxSide)
 
-    val from = corners.toList().flatMap { listOf(it.x * src.width, it.y * src.height) }.toFloatArray()
+    val from = cut.toList().flatMap { listOf(it.x * src.width, it.y * src.height) }.toFloatArray()
     val to = floatArrayOf(
         0f, 0f,
         outW.toFloat(), 0f,
@@ -297,6 +317,9 @@ internal fun enhanceDocument(page: Bitmap) {
         }
     }
 }
+
+/** Whiten slivers of desk left along the edges. Only for an enhanced (white-paper) page. */
+internal fun cleanEdges(page: Bitmap) = whitenEdgeSlivers(BitmapPixelGrid(page))
 
 internal fun scanDirectory(context: Context): File =
     File(context.cacheDir, SCAN_DIR).apply { mkdirs() }

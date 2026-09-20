@@ -20,6 +20,7 @@ import com.tinyggrok.app.data.scan.NormPoint
 import com.tinyggrok.app.data.scan.locatePage
 import com.tinyggrok.app.data.scan.isPlausibleQuad
 import com.tinyggrok.app.data.scan.SCAN_PROMPT_MAX_SIDE
+import com.tinyggrok.app.data.scan.cleanEdges
 import com.tinyggrok.app.data.scan.enhanceDocument
 import com.tinyggrok.app.data.scan.SCAN_OUTPUT_MAX_SIDE
 import com.tinyggrok.app.data.scan.flattenFromCapture
@@ -463,6 +464,7 @@ class ScanViewModel @Inject constructor(
                             // Cosmetic: if it cannot run, the plain page is still a good scan.
                             try {
                                 enhanceDocument(flat)
+                                cleanEdges(flat)
                             } catch (e: Throwable) {
                                 Log.w(TAG, "Enhancement skipped: ${e.javaClass.simpleName}: ${e.message}")
                             }
