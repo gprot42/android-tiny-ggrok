@@ -59,6 +59,16 @@ class RealPhotoHarnessTest {
         File(out!!).writeBytes("$w $h\n".toByteArray() + result)
     }
 
+    /** Opt-in: print the slant of the text in a real flattened page (SKEW_FIXTURE, raw brightness). */
+    @Test
+    fun measureTextSkewOnARealPage() {
+        val path = System.getenv("SKEW_FIXTURE")
+        assumeTrue("SKEW_FIXTURE not set", !path.isNullOrBlank())
+        val image = load(path!!)
+        println("HARNESS skew upper ${estimateTextSkew(image, 0.08f, 0.45f)}")
+        println("HARNESS skew lower ${estimateTextSkew(image, 0.55f, 0.92f)}")
+    }
+
     @Test
     fun locateAndRefineOnARealPhoto() {
         val path = System.getenv("SCAN_FIXTURE")

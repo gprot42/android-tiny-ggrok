@@ -43,6 +43,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
@@ -281,6 +282,10 @@ private fun AlignedPage(page: android.graphics.Bitmap) {
             bitmap = image,
             contentDescription = "Aligned page",
             contentScale = ContentScale.Fit,
+            // The page is typically twice the screen's width. The default scaling is the
+            // cheapest kind and is poor at shrinking: thin strokes come out broken and
+            // jagged, and a good file looks bad on screen.
+            filterQuality = FilterQuality.High,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {

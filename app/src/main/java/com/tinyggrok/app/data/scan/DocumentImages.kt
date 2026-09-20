@@ -232,9 +232,15 @@ internal fun Bitmap.toDetectionJpegBase64(): String {
     return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
 }
 
-/** Grayscale copy for [refineCorners]. */
-internal fun Bitmap.toLumaImage(): LumaImage {
-    val small = scaledToFit(LUMA_MAX_SIDE)
+/**
+ * Longest side of the grayscale copy used to measure the slant of print. Larger than the
+ * one used for finding edges: lines of text must still be distinct lines at this size.
+ */
+internal const val TEXT_LUMA_MAX_SIDE = 1600
+
+/** Grayscale copy for analysis: [refineCorners] by default, larger for [straightenByText]. */
+internal fun Bitmap.toLumaImage(maxSide: Int = LUMA_MAX_SIDE): LumaImage {
+    val small = scaledToFit(maxSide)
     val w = small.width
     val h = small.height
     val pixels = IntArray(w * h)

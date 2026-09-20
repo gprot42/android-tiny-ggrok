@@ -32,7 +32,9 @@ import com.tinyggrok.app.data.scan.orderCorners
 import com.tinyggrok.app.data.scan.purgeOldScans
 import com.tinyggrok.app.data.scan.refineCorners
 import com.tinyggrok.app.data.scan.saveScanJpeg
+import com.tinyggrok.app.data.scan.TEXT_LUMA_MAX_SIDE
 import com.tinyggrok.app.data.scan.squareUp
+import com.tinyggrok.app.data.scan.straightenByText
 import com.tinyggrok.app.data.scan.toDetectionJpegBase64
 import com.tinyggrok.app.data.scan.toLumaImage
 import com.tinyggrok.app.data.scan.warpDocument
@@ -132,6 +134,21 @@ class ScanViewModel @Inject constructor(
     /** Grayscale copy of the current photo, built once and reused by every analysis pass. */
     private var lumaOf: Pair<Bitmap, LumaImage>? = null
 
+    /**
+     * Let the print have the final say on what is level. Paper edges are what the outline
+     * is fitted to, and they can mislead (a plastic sleeve, a sheet underneath, a printer
+     * that laid the text slightly askew); see [straightenByText].
+     */
+    private suspend fun levelToPrint(photo: Bitmap, corners: DocumentCorners): DocumentCorners =
+        withContext(Dispatchers.Default) {
+            try {
+                straightenByText(photo.toLumaImage(TEXT_LUMA_MAX_SIDE), corners)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Levelling to print skipped: ${e.javaClass.simpleName}: ${e.message}")
+                corners
+            }
+        }
+
     private suspend fun lumaFor(photo: Bitmap): LumaImage {
         lumaOf?.takeIf { it.first === photo }?.let { return it.second }
         return withContext(Dispatchers.Default) { photo.toLumaImage() }.also { lumaOf = photo to it }
@@ -196,7 +213,7 @@ class ScanViewModel @Inject constructor(
         // in milliseconds; making the user wait on a model call for that is absurd, and
         // it would fail outright with no network or no key.
         val luma = lumaFor(photo)
-        val local = withContext(Dispatchers.Default) { locatePage(luma) }
+        val local = withContext(Dispatchers.Default) { locatePage(luma) }?.let { levelToPrint(photo, it) }
         if (local != null) {
             if (userAdjusted) return
             _uiState.value = _uiState.value.copy(
@@ -236,7 +253,7 @@ class ScanViewModel @Inject constructor(
             // its missing sides reconstructed. Grok saw the whole scene, so if its outline
             // cannot be verified it is still used, merely tightened where edges are found.
             squareUp(luma, rough) ?: refineCorners(luma, rough)
-        }
+        }.let { levelToPrint(photo, it) }
         if (userAdjusted) return
         _uiState.value = _uiState.value.copy(
             corners = aligned,
@@ -284,8 +301,10 @@ class ScanViewModel @Inject constructor(
         if (state.phase == ScanPhase.SAVING) return
         viewModelScope.launch {
             val luma = lumaFor(photo)
-            val snapped = withContext(Dispatchers.Default) { refineCorners(luma, state.corners) }
-            val moved = snapped != state.corners
+            val onEdges = withContext(Dispatchers.Default) { refineCorners(luma, state.corners) }
+            val moved = onEdges != state.corners
+            // Only level to the print once the corners are actually on the page.
+            val snapped = if (moved) levelToPrint(photo, onEdges) else onEdges
             _uiState.value = _uiState.value.copy(
                 corners = snapped,
                 note = if (moved) {
