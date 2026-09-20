@@ -20,6 +20,12 @@ private const val MAX_PAGE_AREA = 0.985f
 /** Share of the photo a page must cover to be believed on the strength of one real edge. */
 private const val DOMINANT_PAGE_AREA = 0.5f
 
+/** Spacing of trial positions when searching for a lost side, as a fraction of the diagonal. */
+private const val RECOVERY_STEP_FRACTION = 0.03f
+
+/** How far towards the opposite side a lost side is searched for. */
+private const val MAX_RECOVERY_DEPTH = 0.5f
+
 /** A side this close to the photo's border, as a fraction of its size, is "cut by the frame". */
 private const val FRAME_EDGE_TOLERANCE = 0.02f
 
@@ -67,12 +73,23 @@ internal fun squareUp(image: LumaImage, rough: DocumentCorners): DocumentCorners
 
 /** As [squareUp], with the number of sides confirmed on real edges. */
 internal fun squareUpDetailed(image: LumaImage, rough: DocumentCorners): Pair<DocumentCorners, Int>? {
-    val refined = refineCornersDetailed(image, rough)
+    var refined = refineCornersDetailed(image, rough)
+    if (unaccounted(refined).isNotEmpty()) refined = recoverSides(image, refined)
+    return accept(image, refined)
+}
+
+/** Sides that are neither confirmed on a paper edge nor explained by the photo's border. */
+private fun unaccounted(r: Refinement): List<Int> {
+    val c = r.corners.toList()
+    return (0 until 4).filter { !r.confirmed[it] && !liesOnFrame(c[it], c[(it + 1) % 4]) }
+}
+
+private fun accept(image: LumaImage, refined: Refinement): Pair<DocumentCorners, Int>? {
+    if (unaccounted(refined).isNotEmpty()) return null
     val corners = refined.corners.toList()
     val cutByFrame = BooleanArray(4) { i ->
         !refined.confirmed[i] && liesOnFrame(corners[i], corners[(i + 1) % 4])
     }
-    for (i in 0 until 4) if (!refined.confirmed[i] && !cutByFrame[i]) return null
     val real = refined.confirmedSides
     if (real == 0) return null
     // One real edge is only believable for a page that dominates the photo; a small
@@ -82,6 +99,102 @@ internal fun squareUpDetailed(image: LumaImage, rough: DocumentCorners): Pair<Do
 
     val completed = completeOutOfFrameSides(refined.corners, refined.confirmed, image.width, image.height)
     return (completed ?: refined.corners) to real
+}
+
+/**
+ * Repair an outline that is right except for a side or two, instead of discarding it.
+ *
+ * Anything bright touching a page (a hand holding it, a cloth, a second sheet) merges with
+ * it in the brightness split, and the proposed side there runs through the clutter instead
+ * of along the paper. Reported from a real scan: the top, left and right were found, the
+ * bottom ran diagonally through a cloth and the photographer's hand, and the whole outline
+ * was thrown away although the true edge was in plain view a little further in.
+ *
+ * So for each side that cannot be confirmed, walk a trial line inward from where it was
+ * proposed, held parallel to the confirmed opposite side (paper has parallel sides), and
+ * keep the first position at which a real paper edge is confirmed.
+ */
+private fun recoverSides(image: LumaImage, start: Refinement): Refinement {
+    var best = start
+    val w = (image.width - 1).toFloat()
+    val h = (image.height - 1).toFloat()
+    val step = RECOVERY_STEP_FRACTION * kotlin.math.hypot(w, h)
+
+    for (side in unaccounted(start)) {
+        val opposite = (side + 2) % 4
+        if (!best.confirmed[opposite]) continue
+        val pts = best.corners.toList().map { floatArrayOf(it.x * w, it.y * h) }
+        val a = pts[side]
+        val b = pts[(side + 1) % 4]
+        val oa = pts[opposite]
+        val ob = pts[(opposite + 1) % 4]
+        val olen = kotlin.math.hypot(ob[0] - oa[0], ob[1] - oa[1])
+        if (olen < 1e-3f) continue
+        // Opposite sides run in opposite senses round the quad.
+        val dir = floatArrayOf(-(ob[0] - oa[0]) / olen, -(ob[1] - oa[1]) / olen)
+        val inward = floatArrayOf(-dir[1], dir[0])
+        // Start from whichever end of the proposed side is further in: clutter only ever
+        // pushes a side outward, so the true edge is at or inside that point.
+        val da = a[0] * inward[0] + a[1] * inward[1]
+        val db = b[0] * inward[0] + b[1] * inward[1]
+        val from = if (da >= db) a else b
+        val room = kotlin.math.abs(
+            (oa[0] - from[0]) * inward[0] + (oa[1] - from[1]) * inward[1]
+        ) * MAX_RECOVERY_DEPTH
+
+        var travelled = 0f
+        while (travelled <= room) {
+            val origin = floatArrayOf(from[0] + inward[0] * travelled, from[1] + inward[1] * travelled)
+            val trial = withSide(best.corners, side, origin, dir, w, h)
+            if (trial != null) {
+                val r = refineCornersDetailed(image, trial)
+                val keptOthers = (0 until 4).all { it == side || !best.confirmed[it] || r.confirmed[it] }
+                if (r.confirmed[side] && keptOthers) {
+                    best = r
+                    break
+                }
+            }
+            travelled += step
+        }
+    }
+    return best
+}
+
+/** [corners] with one side replaced by the line through [origin] along [dir] (pixels). */
+private fun withSide(
+    corners: DocumentCorners,
+    side: Int,
+    origin: FloatArray,
+    dir: FloatArray,
+    w: Float,
+    h: Float
+): DocumentCorners? {
+    val pts = corners.toList().map { floatArrayOf(it.x * w, it.y * h) }
+    fun meet(p: FloatArray, d: FloatArray, q: FloatArray, e: FloatArray): FloatArray? {
+        val cross = d[0] * e[1] - d[1] * e[0]
+        if (kotlin.math.abs(cross) < 1e-4f) return null
+        val t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / cross
+        return floatArrayOf(p[0] + d[0] * t, p[1] + d[1] * t)
+    }
+    fun sideDir(i: Int): FloatArray {
+        val p = pts[i]
+        val q = pts[(i + 1) % 4]
+        return floatArrayOf(q[0] - p[0], q[1] - p[1])
+    }
+    val before = (side + 3) % 4
+    val after = (side + 1) % 4
+    val first = meet(origin, dir, pts[before], sideDir(before)) ?: return null
+    val second = meet(origin, dir, pts[after], sideDir(after)) ?: return null
+    val out = pts.map { it.copyOf() }.toMutableList()
+    out[side] = first
+    out[(side + 1) % 4] = second
+    val norm = out.map {
+        NormPoint(
+            (it[0] / w).coerceIn(-OUT_OF_FRAME_ALLOWANCE, 1f + OUT_OF_FRAME_ALLOWANCE),
+            (it[1] / h).coerceIn(-OUT_OF_FRAME_ALLOWANCE, 1f + OUT_OF_FRAME_ALLOWANCE)
+        )
+    }
+    return DocumentCorners(norm[0], norm[1], norm[2], norm[3]).takeIf { isPlausibleQuad(it) }
 }
 
 private fun liesOnFrame(a: NormPoint, b: NormPoint): Boolean {

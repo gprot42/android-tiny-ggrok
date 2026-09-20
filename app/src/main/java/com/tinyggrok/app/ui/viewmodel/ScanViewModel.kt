@@ -73,6 +73,14 @@ data class ScanUiState(
     val phase: ScanPhase = ScanPhase.LOADING,
     /** One line explaining the current state, shown above the photo. */
     val note: String = "",
+    /**
+     * The page as it will be saved: cut out, straightened and (optionally) enhanced. When
+     * set, the screen shows this instead of the outline editor. Without it the straightening
+     * only ever happened invisibly at the moment of sharing, and the editor, which shows the
+     * original tilted photo with an outline on it, looked as if it found the borders and
+     * then never aligned anything.
+     */
+    val result: Bitmap? = null,
     /** Whether the saved page is cleaned up to read like a scan (white paper, dark ink). */
     val enhance: Boolean = true,
     /**
@@ -173,7 +181,12 @@ class ScanViewModel @Inject constructor(
         val photo = _uiState.value.photo ?: return
         detectJob?.cancel()
         userAdjusted = false
-        _uiState.value = _uiState.value.copy(phase = ScanPhase.DETECTING, note = ASKING_GROK, error = null)
+        _uiState.value = _uiState.value.copy(
+            phase = ScanPhase.DETECTING,
+            note = ASKING_GROK,
+            error = null,
+            result = null
+        )
         detectJob = viewModelScope.launch { alignWithGrok(photo) }
     }
 
@@ -190,6 +203,7 @@ class ScanViewModel @Inject constructor(
                 phase = ScanPhase.ALIGNED,
                 note = alignedNote(local)
             )
+            align()
             return
         }
         _uiState.value = _uiState.value.copy(note = ASKING_GROK)
@@ -228,6 +242,7 @@ class ScanViewModel @Inject constructor(
             phase = ScanPhase.ALIGNED,
             note = alignedNote(aligned)
         )
+        align()
     }
 
     /**
@@ -254,6 +269,7 @@ class ScanViewModel @Inject constructor(
         userAdjusted = true
         detectJob?.cancel()
         _uiState.value = state.copy(
+            result = null,
             corners = moved,
             phase = ScanPhase.MANUAL,
             note = "Tap Snap to pull the corners onto the paper edges."
@@ -304,7 +320,9 @@ class ScanViewModel @Inject constructor(
                 userTurn = (userTurn + 90) % 360
                 // The previous bitmap is left to the garbage collector: the screen may
                 // still be drawing it this frame, and recycling under it would crash.
-                _uiState.value = _uiState.value.copy(photo = turned, corners = corners)
+                val showing = _uiState.value.result != null
+                _uiState.value = _uiState.value.copy(photo = turned, corners = corners, result = null)
+                if (showing) align()
             } catch (e: Throwable) {
                 _uiState.value = _uiState.value.copy(
                     error = "Couldn't rotate: ${e.message ?: e.javaClass.simpleName}"
@@ -348,7 +366,47 @@ class ScanViewModel @Inject constructor(
     /** Enhancement suits print; a page that is mostly photographs looks better without it. */
     fun toggleEnhance() {
         enhancePreference = !enhancePreference
+        val showing = _uiState.value.result != null
         _uiState.value = _uiState.value.copy(enhance = enhancePreference)
+        if (showing) align()
+    }
+
+    /**
+     * Produce the page for the current outline and show it. This is the file that Share
+     * and To prompt will use, so what is on screen is exactly what gets sent.
+     */
+    fun align() {
+        val state = _uiState.value
+        if (state.photo == null || !state.canConfirm) return
+        flattenThen(keepOpen = true) { file ->
+            viewModelScope.launch {
+                val shown = withContext(Dispatchers.Default) { decodeForDisplay(file) }
+                if (shown == null) {
+                    _uiState.value = _uiState.value.copy(error = "Couldn't show the aligned page.")
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        result = shown,
+                        note = if (flattenedHow.startsWith("REDUCED")) _uiState.value.note else ALIGNED_RESULT
+                    )
+                }
+            }
+        }
+    }
+
+    /** Back to the outline editor, keeping the corners as they are. */
+    fun adjustCorners() {
+        _uiState.value = _uiState.value.copy(
+            result = null,
+            note = "Drag a corner, or tap Snap. Then Align."
+        )
+    }
+
+    private fun decodeForDisplay(file: File): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= DISPLAY_MAX_SIDE) sample *= 2
+        return BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
     }
 
     /**
@@ -473,6 +531,10 @@ class ScanViewModel @Inject constructor(
         const val FINDING = "Finding the page…"
         const val ASKING_GROK = "Asking Grok to find the page… you can drag the corners meanwhile."
         const val ALIGNED = "Edges aligned. Drag a corner to adjust."
+        const val ALIGNED_RESULT = "Aligned. Pinch to zoom in and check it."
+
+        /** Longest side of the aligned page as held for the screen. */
+        const val DISPLAY_MAX_SIDE = 2048
         const val ALIGNED_BUT_SMALL =
             "Edges aligned. For a sharper scan, retake closer so the page fills the frame."
 

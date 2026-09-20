@@ -4,9 +4,11 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,8 +32,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -42,7 +47,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
@@ -139,21 +146,28 @@ fun DocumentScanOverlay(
                     .padding(horizontal = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
-                state.photo?.let { photo ->
-                    val image = remember(photo) { photo.asImageBitmap() }
-                    CornerEditor(
-                        image = image,
-                        imageWidth = photo.width,
-                        imageHeight = photo.height,
-                        corners = state.corners,
-                        enabled = state.phase != ScanPhase.SAVING,
-                        onMove = viewModel::moveCorner
-                    )
+                val aligned = state.result
+                if (aligned != null) {
+                    AlignedPage(page = aligned)
+                } else {
+                    state.photo?.let { photo ->
+                        val image = remember(photo) { photo.asImageBitmap() }
+                        CornerEditor(
+                            image = image,
+                            imageWidth = photo.width,
+                            imageHeight = photo.height,
+                            corners = state.corners,
+                            enabled = state.phase != ScanPhase.SAVING,
+                            onMove = viewModel::moveCorner
+                        )
+                    }
                 }
             }
 
-            // Alignment tools, kept apart from the outcomes below so that a fifth button
-            // never squeezes the row: crowded rows are how Send once fell off screen.
+            val showingResult = state.result != null
+
+            // Tools for the view in front. Kept apart from the outcomes below so that a
+            // crowded row never squeezes a button off screen, and scrollable in case.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -161,32 +175,35 @@ fun DocumentScanOverlay(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(
-                    onClick = viewModel::toggleEnhance,
-                    enabled = state.canConfirm
-                ) {
-                    Text(
-                        text = if (state.enhance) "Enhance: on" else "Enhance: off",
-                        maxLines = 1,
-                        softWrap = false
-                    )
+                if (showingResult) {
+                    // Enhancement lives here, where its effect can be seen.
+                    TextButton(onClick = viewModel::toggleEnhance, enabled = state.canConfirm) {
+                        Text(
+                            text = if (state.enhance) "Enhance: on" else "Enhance: off",
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                    TextButton(onClick = viewModel::rotate, enabled = state.canConfirm) {
+                        Text("Rotate", maxLines = 1, softWrap = false)
+                    }
+                    TextButton(onClick = viewModel::adjustCorners, enabled = state.canConfirm) {
+                        Text("Adjust corners", maxLines = 1, softWrap = false)
+                    }
+                } else {
+                    TextButton(onClick = viewModel::rotate, enabled = state.canConfirm) {
+                        Text("Rotate", maxLines = 1, softWrap = false)
+                    }
+                    TextButton(onClick = viewModel::snapToEdges, enabled = state.canConfirm) {
+                        Text("Snap", maxLines = 1, softWrap = false)
+                    }
+                    TextButton(
+                        onClick = viewModel::askGrok,
+                        enabled = state.canConfirm && state.phase != ScanPhase.DETECTING
+                    ) { Text("Ask Grok", maxLines = 1, softWrap = false) }
                 }
-                TextButton(
-                    onClick = viewModel::rotate,
-                    enabled = state.canConfirm
-                ) { Text("Rotate", maxLines = 1, softWrap = false) }
-                TextButton(
-                    onClick = viewModel::snapToEdges,
-                    enabled = state.canConfirm
-                ) { Text("Snap", maxLines = 1, softWrap = false) }
-                TextButton(
-                    onClick = viewModel::askGrok,
-                    enabled = state.canConfirm && state.phase != ScanPhase.DETECTING
-                ) { Text("Ask Grok", maxLines = 1, softWrap = false) }
             }
 
-            // Where the aligned page goes. Share leaves the scanner open, so one scan can
-            // be sent to another app and added to the prompt as well.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -197,29 +214,82 @@ fun DocumentScanOverlay(
                     Text("Cancel", color = Color.White, maxLines = 1, softWrap = false)
                 }
                 Spacer(modifier = Modifier.weight(1f))
-                OutlinedButton(
-                    onClick = {
-                        viewModel.share { file ->
-                            try {
-                                startImageFileShare(context, file, "Share scan")
-                            } catch (e: Exception) {
-                                Toast.makeText(
-                                    context,
-                                    "No app available to share to.",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                if (showingResult) {
+                    // Where the aligned page goes. Share leaves the scanner open, so one
+                    // scan can be sent to another app and added to the prompt as well.
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.share { file ->
+                                try {
+                                    startImageFileShare(context, file, "Share scan")
+                                } catch (e: Exception) {
+                                    Toast.makeText(
+                                        context,
+                                        "No app available to share to.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
                             }
-                        }
-                    },
-                    enabled = state.canConfirm
-                ) { Text("Share", maxLines = 1, softWrap = false) }
-                Button(
-                    onClick = { viewModel.confirm(onScanned) },
-                    enabled = state.canConfirm,
-                    modifier = Modifier.padding(start = 8.dp)
-                ) { Text("To prompt", maxLines = 1, softWrap = false) }
+                        },
+                        enabled = state.canConfirm
+                    ) { Text("Share", maxLines = 1, softWrap = false) }
+                    Button(
+                        onClick = { viewModel.confirm(onScanned) },
+                        enabled = state.canConfirm,
+                        modifier = Modifier.padding(start = 8.dp)
+                    ) { Text("To prompt", maxLines = 1, softWrap = false) }
+                } else {
+                    // The outline is only a proposal. Align shows what it produces.
+                    Button(
+                        onClick = viewModel::align,
+                        enabled = state.canConfirm
+                    ) { Text("Align", maxLines = 1, softWrap = false) }
+                }
             }
         }
+    }
+}
+
+/** The straightened page, fitted to the screen. Pinch to zoom, drag to pan, double-tap to reset. */
+@Composable
+private fun AlignedPage(page: android.graphics.Bitmap) {
+    val image = remember(page) { page.asImageBitmap() }
+    var scale by remember(page) { mutableFloatStateOf(1f) }
+    var offset by remember(page) { mutableStateOf(Offset.Zero) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(page) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val next = (scale * zoom).coerceIn(1f, 8f)
+                    scale = next
+                    offset = if (next <= 1f) Offset.Zero else offset + pan
+                }
+            }
+            .pointerInput(page) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        scale = 1f
+                        offset = Offset.Zero
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            bitmap = image,
+            contentDescription = "Aligned page",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
+                }
+        )
     }
 }
 

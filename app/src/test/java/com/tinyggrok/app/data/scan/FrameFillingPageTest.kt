@@ -107,6 +107,35 @@ class FrameFillingPageTest {
     }
 
     @Test
+    fun brightClutterTouchingThePageDoesNotCostTheWholeOutline() {
+        // Reported from a real scan: a cloth and the photographer's hand, both about as
+        // bright as paper, touched the bottom of the page. They merged with it in the
+        // brightness split, the proposed bottom side ran diagonally through them, and the
+        // outline was discarded although the true edge was in plain view.
+        val page = scene(degrees = 2f, cx = 240f, cy = 290f, halfW = 200f, halfH = 230f)
+        val data = page.data.copyOf()
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                // A bright lump hanging off the bottom-right of the sheet, reaching the photo's edge.
+                val dx = (x - 330f) / 190f
+                val dy = (y - 600f) / 95f
+                if (dx * dx + dy * dy < 1f && data[y * w + x] < 0.5f) data[y * w + x] = 0.80f
+            }
+        }
+        val cluttered = LumaImage(w, h, data)
+
+        val clean = locatePage(page)
+        val found = locatePage(cluttered)
+        assertNotNull("fixture: the clean page must be found", clean)
+        assertNotNull("clutter touching one side must not lose the page", found)
+        // Same outline as without the clutter, bottom side included.
+        val worst = found!!.toList().zip(clean!!.toList()).maxOf { (a, b) ->
+            kotlin.math.hypot(a.x - b.x, a.y - b.y)
+        }
+        assertTrue("outline moved by $worst because of the clutter", worst < 0.012f)
+    }
+
+    @Test
     fun missingSideFollowsItsOppositeAndKeepsAllVisiblePaper() {
         // Direct check of the reconstruction: top, right and bottom known; left unknown.
         val known = DocumentCorners(
