@@ -134,8 +134,20 @@ private const val MAX_FIT_RMS_FRACTION = 0.004f
  */
 private class Station(val origin: Vec, val steps: FloatArray, val fine: FloatArray)
 
-/** Corners after refinement, and how many of the four sides were confirmed on real edges. */
-internal data class Refinement(val corners: DocumentCorners, val confirmedSides: Int)
+/**
+ * Corners after refinement, and which sides were confirmed on real paper edges. Side i
+ * runs from corner i to corner i+1: top, right, bottom, left.
+ */
+internal class Refinement(val corners: DocumentCorners, val confirmed: BooleanArray) {
+    val confirmedSides: Int get() = confirmed.count { it }
+}
+
+/**
+ * How far outside the photo a corner may lie, as a fraction of its size. A page that
+ * fills the frame has corners the camera never saw; where two real edges would meet just
+ * off the photo, clamping the corner to the border would bend the page.
+ */
+internal const val OUT_OF_FRAME_ALLOWANCE = 0.35f
 
 /** Rows of pixels either side of a position used to pinpoint it once identified. */
 private const val FINE_DEPTH = 3
@@ -172,7 +184,7 @@ internal fun refineCorners(image: LumaImage, rough: DocumentCorners): DocumentCo
  * whose sides cannot be confirmed is not lying on paper edges, whatever proposed it.
  */
 internal fun refineCornersDetailed(image: LumaImage, rough: DocumentCorners): Refinement {
-    val unchanged = Refinement(rough, 0)
+    val unchanged = Refinement(rough, BooleanArray(4))
     val w = image.width
     val h = image.height
     if (w < 16 || h < 16) return unchanged
@@ -200,8 +212,7 @@ internal fun refineCornersDetailed(image: LumaImage, rough: DocumentCorners): Re
     val maxRms = max(1.5f, MAX_FIT_RMS_FRACTION * diag)
     val fitted = sides.map { side -> side?.let { fitSide(it, polarity, radius, maxRms) } }
     // Nothing to go on (blank image, or no page within reach): hand back what came in.
-    val confirmed = fitted.count { it != null }
-    if (confirmed == 0) return unchanged
+    if (fitted.all { it == null }) return unchanged
     val lines = (0 until 4).map { i ->
         fitted[i] ?: Line(corners[i], (corners[(i + 1) % 4] - corners[i]).normalized())
     }
@@ -231,12 +242,12 @@ internal fun refineCornersDetailed(image: LumaImage, rough: DocumentCorners): Re
     // how big the page is has found a different rectangle, not a better fit of this one.
     val areaBefore = quadArea(rough)
     if (areaBefore > 0f && abs(quadArea(result) - areaBefore) / areaBefore > MAX_AREA_CHANGE) return unchanged
-    return Refinement(result, confirmed)
+    return Refinement(result, BooleanArray(4) { fitted[it] != null })
 }
 
 private fun Vec.toNorm(w: Int, h: Int) = NormPoint(
-    (x / (w - 1)).coerceIn(0f, 1f),
-    (y / (h - 1)).coerceIn(0f, 1f)
+    (x / (w - 1)).coerceIn(-OUT_OF_FRAME_ALLOWANCE, 1f + OUT_OF_FRAME_ALLOWANCE),
+    (y / (h - 1)).coerceIn(-OUT_OF_FRAME_ALLOWANCE, 1f + OUT_OF_FRAME_ALLOWANCE)
 )
 
 private class SideProbe(val dir: Vec, val normal: Vec, val stations: List<Station>)

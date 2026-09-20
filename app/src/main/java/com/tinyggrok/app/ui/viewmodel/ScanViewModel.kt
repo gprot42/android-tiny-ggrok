@@ -31,6 +31,7 @@ import com.tinyggrok.app.data.scan.orderCorners
 import com.tinyggrok.app.data.scan.purgeOldScans
 import com.tinyggrok.app.data.scan.refineCorners
 import com.tinyggrok.app.data.scan.saveScanJpeg
+import com.tinyggrok.app.data.scan.squareUp
 import com.tinyggrok.app.data.scan.toDetectionJpegBase64
 import com.tinyggrok.app.data.scan.toLumaImage
 import com.tinyggrok.app.data.scan.warpDocument
@@ -215,7 +216,12 @@ class ScanViewModel @Inject constructor(
         // The model is right about where the page is and loose about exactly where its
         // corners are; this is the step that makes the result square.
         val luma = lumaFor(photo)
-        val aligned = withContext(Dispatchers.Default) { refineCorners(luma, rough) }
+        val aligned = withContext(Dispatchers.Default) {
+            // Same treatment as the on-device route, so a page running out of frame gets
+            // its missing sides reconstructed. Grok saw the whole scene, so if its outline
+            // cannot be verified it is still used, merely tightened where edges are found.
+            squareUp(luma, rough) ?: refineCorners(luma, rough)
+        }
         if (userAdjusted) return
         _uiState.value = _uiState.value.copy(
             corners = aligned,

@@ -100,13 +100,13 @@ class PageFinderTest {
 
     @Test
     fun bareCarpetHasNoPage() {
-        assertNull(findPage(carpetScene(page = null)))
+        assertNull(locatePage(carpetScene(page = null)))
     }
 
     @Test
     fun paperBarelyDifferentFromItsSurfaceIsLeftToGrok() {
         // White sheet on a pale desk: not enough separation to trust a threshold.
-        assertNull(findPage(carpetScene(page = 0.80f, surface = 0.74f, speckle = 0.06f)))
+        assertNull(locatePage(carpetScene(page = 0.80f, surface = 0.74f, speckle = 0.06f)))
     }
 
     @Test
@@ -116,7 +116,7 @@ class PageFinderTest {
             val y = (i / width - height / 2f) / (height * 0.35f)
             if (x * x + y * y < 1f) 0.9f else 0.3f
         }
-        assertNull(findPage(LumaImage(width, height, data)))
+        assertNull(locatePage(LumaImage(width, height, data)))
     }
 
     @Test

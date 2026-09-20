@@ -253,8 +253,8 @@ private fun CornerEditor(
                         } else {
                             currentCorners.toList()
                                 .mapIndexed { i, p ->
-                                    val x = rect.left + p.x * rect.width
-                                    val y = rect.top + p.y * rect.height
+                                    val x = rect.left + p.x.coerceIn(0f, 1f) * rect.width
+                                    val y = rect.top + p.y.coerceIn(0f, 1f) * rect.height
                                     i to hypot(start.x - x, start.y - y)
                                 }
                                 .filter { it.second <= grabRadius }
@@ -287,8 +287,14 @@ private fun CornerEditor(
             dstSize = IntSize(rect.width.roundToInt(), rect.height.roundToInt())
         )
 
+        // A page that fills the frame can have corners the camera never saw, a little
+        // outside the photo. They are kept exactly for flattening, but drawn and grabbed
+        // at the photo's border, where a finger can reach them.
         val points = corners.toList().map {
-            Offset(rect.left + it.x * rect.width, rect.top + it.y * rect.height)
+            Offset(
+                rect.left + it.x.coerceIn(0f, 1f) * rect.width,
+                rect.top + it.y.coerceIn(0f, 1f) * rect.height
+            )
         }
         val quad = Path().apply {
             moveTo(points[0].x, points[0].y)
