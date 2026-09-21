@@ -81,6 +81,18 @@ internal class LumaImage(val width: Int, val height: Int, val data: FloatArray) 
     }
 }
 
+/**
+ * A photo as three planes of floats. Brightness, even with colourfulness taken off it,
+ * is one number per pixel, and some pages cannot be told from their surroundings by any
+ * one number: a magazine cover on a wooden desk is no lighter, no darker and no less
+ * colourful than the desk, only a different colour. See [PageViews].
+ */
+internal class ColourImage(val r: LumaImage, val g: LumaImage, val b: LumaImage) {
+    val width: Int get() = r.width
+    val height: Int get() = r.height
+    val planes: List<LumaImage> get() = listOf(r, g, b)
+}
+
 private data class Vec(val x: Float, val y: Float) {
     operator fun plus(o: Vec) = Vec(x + o.x, y + o.y)
     operator fun minus(o: Vec) = Vec(x - o.x, y - o.y)
@@ -183,18 +195,35 @@ internal fun refineCorners(image: LumaImage, rough: DocumentCorners): DocumentCo
  * As [refineCorners], also reporting how many sides were confirmed. A proposed outline
  * whose sides cannot be confirmed is not lying on paper edges, whatever proposed it.
  */
-internal fun refineCornersDetailed(image: LumaImage, rough: DocumentCorners): Refinement {
+internal fun refineCornersDetailed(image: LumaImage, rough: DocumentCorners): Refinement =
+    refineOn(listOf(image), rough, SEARCH_RADIUS_FRACTION)
+
+/**
+ * As above, judging "where the page begins" by change of *colour* rather than of
+ * brightness: the distance between the typical colour either side of a candidate position.
+ * A distance has no sign, so this view cannot use the rule that a page is lighter (or
+ * darker) than its surroundings all the way round to tell the paper's edge from print
+ * just inside it. It is therefore the last resort, and [reach] (a fraction of the
+ * diagonal) should be kept short whenever the rough outline is known to be close.
+ */
+internal fun refineCornersDetailed(
+    image: ColourImage,
+    rough: DocumentCorners,
+    reach: Float = SEARCH_RADIUS_FRACTION
+): Refinement = refineOn(image.planes, rough, reach)
+
+private fun refineOn(planes: List<LumaImage>, rough: DocumentCorners, reach: Float): Refinement {
     val unchanged = Refinement(rough, BooleanArray(4))
-    val w = image.width
-    val h = image.height
+    val w = planes[0].width
+    val h = planes[0].height
     if (w < 16 || h < 16) return unchanged
 
     val diag = hypot(w.toFloat(), h.toFloat())
-    val radius = max(6f, SEARCH_RADIUS_FRACTION * diag).toInt()
+    val radius = max(6f, reach * diag).toInt()
     val depth = max(4f, REGION_DEPTH_FRACTION * diag).toInt()
 
     val corners = rough.toList().map { Vec(it.x * (w - 1), it.y * (h - 1)) }
-    val sides = (0 until 4).map { i -> probeSide(image, corners[i], corners[(i + 1) % 4], radius, depth) }
+    val sides = (0 until 4).map { i -> probeSide(planes, corners[i], corners[(i + 1) % 4], radius, depth) }
 
     // Is the page brighter or darker than its surroundings? Decided once for the whole
     // quad, weighted by how decisive each station is, so that texture and print (which
@@ -210,7 +239,9 @@ internal fun refineCornersDetailed(image: LumaImage, rough: DocumentCorners): Re
     val polarity = if (vote > 0f) 1f else -1f
 
     val maxRms = max(1.5f, MAX_FIT_RMS_FRACTION * diag)
-    val fitted = sides.map { side -> side?.let { fitSide(it, polarity, radius, maxRms) } }
+    val fitted = sides.map { side ->
+        side?.let { if (planes.size == 1) fitSide(it, polarity, radius, maxRms) else fitSideByConsensus(it, radius, maxRms) }
+    }
     // Nothing to go on (blank image, or no page within reach): hand back what came in.
     if (fitted.all { it == null }) return unchanged
     val lines = (0 until 4).map { i ->
@@ -258,49 +289,63 @@ private class SideProbe(val dir: Vec, val normal: Vec, val stations: List<Statio
  * points into the page (corners run clockwise), so a bright page on a dark surface
  * gives positive steps.
  */
-private fun probeSide(img: LumaImage, a: Vec, b: Vec, radius: Int, depth: Int): SideProbe? {
+private fun probeSide(planes: List<LumaImage>, a: Vec, b: Vec, radius: Int, depth: Int): SideProbe? {
     val span = b - a
     if (span.length() < 8f) return null
     val dir = span.normalized()
     val normal = Vec(-dir.y, dir.x)
     val reach = radius + depth
+    val rows = 2 * reach + 1
+    val taps = 5
 
     val stations = (0 until SAMPLES_PER_EDGE).map { k ->
         val t = EDGE_MARGIN + (1f - 2f * EDGE_MARGIN) * k / (SAMPLES_PER_EDGE - 1)
         val origin = a + span * t
 
-        // Brightness samples: for each offset across the side, a short run along it.
-        val taps = 5
-        val samples = FloatArray((2 * reach + 1) * taps)
-        for (i in 0..2 * reach) {
+        // Samples: for each offset across the side, a short run along it, in every plane.
+        val samples = Array(planes.size) { FloatArray(rows * taps) }
+        for (i in 0 until rows) {
             val across = (i - reach).toFloat()
-            for (k in 0 until taps) {
-                val along = (k - taps / 2) * 2f
+            for (tap in 0 until taps) {
+                val along = (tap - taps / 2) * 2f
                 val p = origin + dir * along + normal * across
-                samples[i * taps + k] = img.at(p.x, p.y)
+                for (c in planes.indices) samples[c][i * taps + tap] = planes[c].at(p.x, p.y)
             }
         }
+
+        // Typical value of each plane over the `depth` rows starting at each row.
         val window = FloatArray(depth * taps)
-        fun medianOf(firstRow: Int): Float {
-            System.arraycopy(samples, firstRow * taps, window, 0, window.size)
-            window.sort()
-            return window[window.size / 2]
+        val medians = Array(planes.size) { c ->
+            FloatArray(rows - depth + 1) { first ->
+                System.arraycopy(samples[c], first * taps, window, 0, window.size)
+                window.sort()
+                window[window.size / 2]
+            }
         }
 
-        fun meanOf(firstRow: Int, rows: Int): Float {
+        fun meanOf(c: Int, firstRow: Int, count: Int): Float {
             var sum = 0f
-            for (i in firstRow * taps until (firstRow + rows) * taps) sum += samples[i]
-            return sum / (rows * taps)
+            for (i in firstRow * taps until (firstRow + count) * taps) sum += samples[c][i]
+            return sum / (count * taps)
+        }
+
+        // One plane: inside minus outside, signed. Several: how far apart the two colours
+        // are, which has no sign.
+        fun across(inside: (Int) -> Float, outside: (Int) -> Float): Float {
+            if (planes.size == 1) return inside(0) - outside(0)
+            var sum = 0f
+            for (c in planes.indices) sum += (inside(c) - outside(c)).let { it * it }
+            return sqrt(sum / planes.size)
         }
 
         // steps[j] describes a boundary lying between offsets (j - radius - 1) and (j - radius).
         val steps = FloatArray(2 * radius + 1) { j ->
             val at = j + depth // row of the first "inside" sample
-            medianOf(at) - medianOf(at - depth)
+            across({ c -> medians[c][at] }, { c -> medians[c][at - depth] })
         }
         val fine = FloatArray(2 * radius + 1) { j ->
             val at = j + depth
-            meanOf(at, FINE_DEPTH) - meanOf(at - FINE_DEPTH, FINE_DEPTH)
+            across({ c -> meanOf(c, at, FINE_DEPTH) }, { c -> meanOf(c, at - FINE_DEPTH, FINE_DEPTH) })
         }
         Station(origin, steps, fine)
     }
@@ -356,6 +401,104 @@ private fun fitSide(side: SideProbe, polarity: Float, radius: Int, maxRms: Float
     if (Math.toDegrees(acos(cos).toDouble()) > MAX_EDGE_TURN_DEGREES) return null
     return line
 }
+
+/**
+ * [fitSide] for the colour view, where a step has no sign.
+ *
+ * In one plane each station can name *the* boundary: the strongest step facing the way
+ * the page faces, and what lies inside the page mostly faces the other way. Colour steps
+ * face no way, and a cover is printed with steps stronger than its own edge against the
+ * desk, so a station's strongest step is as likely a disco ball as the edge. Tried on a
+ * real cover: stations chose the edge along the lower half of a side and print along the
+ * upper half, the line through both came out turned by a degree and a half, and it still
+ * passed as tight. So here no station chooses. Every sharp boundary at every station is a
+ * candidate, and the side is the straight line that collects the most robust contrast
+ * *along its whole length*: print is strong but local; a soft shadow beside the page runs
+ * the whole length but is weak, and barely registers as a sharp step at all; texture is
+ * sharp and everywhere but, being texture, has no contrast between the typical colours
+ * either side. Only the sheet's own edge is sharp, robustly contrasted and there at every
+ * station.
+ */
+private fun fitSideByConsensus(side: SideProbe, radius: Int, maxRms: Float): Line? {
+    class Candidate(val point: Vec, val weight: Float)
+
+    val stations = side.stations
+    val candidates: List<List<Candidate>> = stations.map { station ->
+        val fine = station.fine
+        val steps = station.steps
+        val found = ArrayList<Candidate>()
+        for (j in 1 until fine.size - 1) {
+            val v = fine[j]
+            if (v < MIN_SHARP_COLOUR_STEP || v < fine[j - 1] || v <= fine[j + 1]) continue
+            // The robust contrast here: the median reads the same for half its depth either way.
+            var contrast = 0f
+            for (k in max(0, j - 2)..min(steps.size - 1, j + 2)) contrast = max(contrast, steps[k])
+            if (contrast < MIN_COLOUR_CONTRAST) continue
+            var offset = (j - radius).toFloat() - 0.5f
+            val curvature = fine[j - 1] - 2f * v + fine[j + 1]
+            if (abs(curvature) > 1e-6f) offset += (0.5f * (fine[j - 1] - fine[j + 1]) / curvature).coerceIn(-1f, 1f)
+            found += Candidate(station.origin + side.normal * offset, min(contrast, COLOUR_CONTRAST_CAP))
+        }
+        found
+    }
+
+    val needed = max(MIN_SAMPLES_FOR_FIT, (MIN_CONSENSUS_SHARE * stations.size).toInt())
+    val tolerance = max(1.5f, 0.4f * maxRms)
+    var bestScore = 0f
+    var bestLine: Line? = null
+    // Lines through one candidate at each of two well-separated stations.
+    val gap = stations.size / 3
+    for (i in stations.indices) for (j in i + gap until stations.size) {
+        for (a in candidates[i]) for (b in candidates[j]) {
+            val dir = (b.point - a.point).normalized()
+            val normal = Vec(-dir.y, dir.x)
+            var score = 0f
+            var agreeing = 0
+            for (others in candidates) {
+                var heaviest = 0f
+                for (c in others) {
+                    if (abs((c.point - a.point).dot(normal)) <= tolerance) heaviest = max(heaviest, c.weight)
+                }
+                if (heaviest > 0f) {
+                    score += heaviest
+                    agreeing++
+                }
+            }
+            if (agreeing >= needed && score > bestScore) {
+                bestScore = score
+                bestLine = Line(a.point, dir)
+            }
+        }
+    }
+    val rough = bestLine ?: return null
+
+    // Least squares through the candidates that agreed, one (the nearest) per station.
+    val roughNormal = Vec(-rough.dir.y, rough.dir.x)
+    val inliers = candidates.mapNotNull { others ->
+        others.filter { abs((it.point - rough.point).dot(roughNormal)) <= tolerance }
+            .minByOrNull { abs((it.point - rough.point).dot(roughNormal)) }?.point
+    }
+    if (inliers.size < needed) return null
+    val line = leastSquaresLine(inliers) ?: return null
+    val lineNormal = Vec(-line.dir.y, line.dir.x)
+    val rms = sqrt(inliers.sumOf { ((it - line.point).dot(lineNormal)).toDouble().let { d -> d * d } } / inliers.size)
+    if (rms > maxRms) return null
+    val cos = abs(line.dir.dot(side.dir)).coerceIn(0f, 1f)
+    if (Math.toDegrees(acos(cos).toDouble()) > MAX_EDGE_TURN_DEGREES) return null
+    return line
+}
+
+/** Smallest sharp change of colour (0..1) that makes a candidate boundary in the colour view. */
+private const val MIN_SHARP_COLOUR_STEP = 0.03f
+
+/** Smallest robust contrast between the typical colours either side of a candidate. */
+private const val MIN_COLOUR_CONTRAST = 0.06f
+
+/** Contrast counts up to this much and no more, so a loud stretch of print cannot outvote a whole edge. */
+private const val COLOUR_CONTRAST_CAP = 0.25f
+
+/** In the colour view a side needs a candidate on its line at this share of its stations. */
+private const val MIN_CONSENSUS_SHARE = 0.6f
 
 /**
  * Offset (pixels along the inward normal) of the paper boundary at one station, or null

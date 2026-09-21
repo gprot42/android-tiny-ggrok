@@ -202,20 +202,95 @@ internal fun isPlausibleQuad(c: DocumentCorners): Boolean {
 }
 
 /**
- * Size of the straightened page in pixels. Opposite edges differ under perspective, so
- * the longer of each pair is used to avoid losing detail, then capped to [maxSide].
+ * Height over width of the flat rectangle whose photograph has these corners, or null
+ * when the corners give no sensible answer.
+ *
+ * The lengths of a page's sides in a photo do not give its proportions: a phone tilted
+ * over a page sees the far end smaller *and the whole page shorter*, and measuring sides
+ * keeps the first effect's correction while ignoring the second. Measured on real scans,
+ * an A4 letter (1.414) came out at 1.387 and a tabloid front page about 8% squat, which
+ * shows in type and in faces.
+ *
+ * The classic remedy (Zhang and He, whiteboard scanning) recovers the camera's focal
+ * length from the page's two vanishing points and the proportions from that. It cannot be
+ * used as published: a phone is nearly always tilted one way only, which leaves one pair
+ * of sides parallel in the photo, one vanishing point at infinity, and the focal length
+ * 0/0. Tried on five real outlines it returned nothing at all, or a focal length of seven
+ * to sixteen times the photo. But the focal length is not really unknown. Phone main
+ * cameras are all much alike (24 to 28 mm equivalent, which is 0.69 to 0.81 of the photo's
+ * long side), so it is assumed. With it the same real A4 photos give 1.412, and 0.708 for
+ * a sheet lying sideways (0.707). How much the assumption matters grows with the tilt:
+ * nothing from straight above, 0.3% at 10 degrees, and 2% at 25 degrees for a lens at
+ * either end of that range. Side lengths are out by 9% and 23% at those same tilts.
  */
+internal fun pageProportions(c: DocumentCorners, srcWidth: Int, srcHeight: Int): Float? {
+    // Homogeneous image points, relative to the middle of the photo.
+    fun point(p: NormPoint) = doubleArrayOf((p.x - 0.5) * srcWidth, (p.y - 0.5) * srcHeight, 1.0)
+    fun cross(a: DoubleArray, b: DoubleArray) =
+        doubleArrayOf(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+    fun dot(a: DoubleArray, b: DoubleArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    val m1 = point(c.tl)
+    val m2 = point(c.tr)
+    val m3 = point(c.bl)
+    val m4 = point(c.br)
+    val d2 = dot(cross(m2, m4), m3)
+    val d3 = dot(cross(m3, m4), m2)
+    if (abs(d2) < 1e-9 || abs(d3) < 1e-9) return null
+    val k2 = dot(cross(m1, m4), m3) / d2
+    val k3 = dot(cross(m1, m4), m2) / d3
+    // Directions of the page's width and height, up to the camera's focal length.
+    val across = DoubleArray(3) { k2 * m2[it] - m1[it] }
+    val down = DoubleArray(3) { k3 * m3[it] - m1[it] }
+
+    val f = ASSUMED_FOCAL_LENGTH * max(srcWidth, srcHeight)
+    fun lengthSquared(n: DoubleArray) = (n[0] * n[0] + n[1] * n[1]) / (f * f) + n[2] * n[2]
+    val width = lengthSquared(across)
+    val height = lengthSquared(down)
+    if (width <= 0.0 || height <= 0.0) return null
+    val ratio = Math.sqrt(height / width).toFloat()
+    return ratio.takeIf { it.isFinite() && it > 0f }
+}
+
+/** Focal length of a phone's main camera, as a fraction of the photo's long side. */
+private const val ASSUMED_FOCAL_LENGTH = 0.72
+
+/**
+ * The proportions from perspective may differ from those of the side lengths by this
+ * factor at most. Generous, because a page photographed from a chair really is that
+ * foreshortened: at 35 degrees an A4 sheet measures 0.95 by its sides.
+ */
+private const val MAX_PROPORTION_CORRECTION = 2f
+
+/**
+ * Size of the straightened page in photo pixels, before any cap: as wide and as tall as
+ * its longer sides in the photo, so no detail is thrown away, then stretched along
+ * whichever way [pageProportions] says the page has been foreshortened.
+ */
+internal fun naturalPageSize(c: DocumentCorners, srcWidth: Int, srcHeight: Int): Pair<Float, Float> {
+    fun dist(a: NormPoint, b: NormPoint): Float =
+        hypot((a.x - b.x) * srcWidth, (a.y - b.y) * srcHeight)
+
+    val w = max(dist(c.tl, c.tr), dist(c.bl, c.br))
+    val h = max(dist(c.tl, c.bl), dist(c.tr, c.br))
+    if (w < 1f || h < 1f) return w to h
+    val measured = h / w
+    // An outline that implies an absurd tilt is a bad outline, not a steep photo.
+    val ratio = pageProportions(c, srcWidth, srcHeight)
+        ?.takeIf { it / measured in (1f / MAX_PROPORTION_CORRECTION)..MAX_PROPORTION_CORRECTION }
+        ?: return w to h
+    val width = max(w, h / ratio)
+    return width to width * ratio
+}
+
+/** Size of the straightened page in pixels: [naturalPageSize], capped to [maxSide]. */
 internal fun flattenedSize(
     c: DocumentCorners,
     srcWidth: Int,
     srcHeight: Int,
     maxSide: Int
 ): Pair<Int, Int> {
-    fun dist(a: NormPoint, b: NormPoint): Float =
-        hypot((a.x - b.x) * srcWidth, (a.y - b.y) * srcHeight)
-
-    val w = max(dist(c.tl, c.tr), dist(c.bl, c.br))
-    val h = max(dist(c.tl, c.bl), dist(c.tr, c.br))
+    val (w, h) = naturalPageSize(c, srcWidth, srcHeight)
     val scale = if (max(w, h) > maxSide) maxSide / max(w, h) else 1f
     return max(1, (w * scale).roundToInt()) to max(1, (h * scale).roundToInt())
 }

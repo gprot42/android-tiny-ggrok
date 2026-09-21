@@ -171,10 +171,9 @@ internal fun flattenFromCapture(
     )
     require(region.width() > 8 && region.height() > 8) { "Page region is empty" }
 
-    // Output size from the page's own edge lengths in stored pixels, in on-screen order.
-    fun dist(i: Int, j: Int) = hypot(xs[i] - xs[j], ys[i] - ys[j])
-    val naturalW = max(dist(0, 1), dist(3, 2))
-    val naturalH = max(dist(0, 3), dist(1, 2))
+    // Output size from the page as it lies in the stored photo, corners in on-screen order
+    // (a quarter turn does not change what the perspective says about its proportions).
+    val (naturalW, naturalH) = naturalPageSize(DocumentCorners(stored[0], stored[1], stored[2], stored[3]), w, h)
     val fit = min(1f, maxSide / max(naturalW, naturalH))
 
     // Subsample while the decode would still exceed the output, or memory, by 2x or more.
@@ -253,6 +252,17 @@ internal fun Bitmap.toLumaImage(maxSide: Int = LUMA_MAX_SIDE): LumaImage {
     return LumaImage(w, h, luma)
 }
 
+/** The views of this photo in which the page's edges are looked for; see [PageViews]. */
+internal fun Bitmap.toPageViews(maxSide: Int = LUMA_MAX_SIDE): PageViews {
+    val small = scaledToFit(maxSide)
+    val w = small.width
+    val h = small.height
+    val pixels = IntArray(w * h)
+    small.getPixels(pixels, 0, w, 0, 0, w, h)
+    if (small !== this) small.recycle()
+    return pageViewsOf(pixels, w, h)
+}
+
 /**
  * Flatten the quad [corners] of [src] into an upright rectangle.
  *
@@ -323,6 +333,9 @@ internal fun enhanceDocument(page: Bitmap) {
         }
     }
 }
+
+/** Print on paper, which [enhanceDocument] suits, or mostly pictures, which it ruins. */
+internal fun looksLikePrint(page: Bitmap): Boolean = looksLikePrint(BitmapPixelGrid(page))
 
 /** Whiten slivers of desk left along the edges. Only for an enhanced (white-paper) page. */
 internal fun cleanEdges(page: Bitmap) = whitenEdgeSlivers(BitmapPixelGrid(page))

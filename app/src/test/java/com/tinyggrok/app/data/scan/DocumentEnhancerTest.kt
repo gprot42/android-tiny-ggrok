@@ -176,4 +176,47 @@ class DocumentEnhancerTest {
         }
         assertArrayEquals(whole, threaded)
     }
+
+    // --- print on paper, or pictures? -----------------------------------------------------
+
+    @Test
+    fun `a printed page counts as print, however unevenly and warmly it is lit`() {
+        val share = paperShare(ArrayPixelGrid(w, h, page()))
+        assertTrue("paper share $share", share > 0.75f)
+        assertTrue(looksLikePrint(ArrayPixelGrid(w, h, page())))
+    }
+
+    @Test
+    fun `print on a pastel sheet counts as print`() {
+        val px = page().map { p ->
+            // The same page printed on yellow stock: blue taken down by two fifths.
+            val b = ((p and 0xFF) * 0.6f).toInt()
+            (p and 0xFFFF00.toInt().inv()) or (p and 0xFFFF00) or b
+        }.toIntArray()
+        assertTrue(looksLikePrint(ArrayPixelGrid(w, h, px)))
+    }
+
+    @Test
+    fun `a page that is one third photograph still counts as print`() {
+        val rnd = Random(9)
+        val px = page()
+        for (y in 0 until h / 3) for (x in 0 until w) {
+            px[y * w + x] = argb(rnd.nextFloat(), 0.3f + 0.5f * x / w, 0.2f + 0.6f * y / (h / 3f))
+        }
+        assertTrue(looksLikePrint(ArrayPixelGrid(w, h, px)))
+    }
+
+    @Test
+    fun `a full-colour cover does not count as print`() {
+        val scene = magazineOnDesk(tiltDegrees = 0f)
+        val c = scene.corners
+        val left = (c.tl.x * (scene.width - 1)).toInt() + 2
+        val top = (c.tl.y * (scene.height - 1)).toInt() + 2
+        val cw = ((c.tr.x - c.tl.x) * (scene.width - 1)).toInt() - 4
+        val ch = ((c.bl.y - c.tl.y) * (scene.height - 1)).toInt() - 4
+        val cover = IntArray(cw * ch) { i -> scene.argb[(top + i / cw) * scene.width + left + i % cw] }
+        val share = paperShare(ArrayPixelGrid(cw, ch, cover))
+        assertTrue("paper share $share", share < 0.4f)
+        assertTrue(!looksLikePrint(ArrayPixelGrid(cw, ch, cover)))
+    }
 }

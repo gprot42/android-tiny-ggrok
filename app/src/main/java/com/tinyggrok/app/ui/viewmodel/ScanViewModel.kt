@@ -15,9 +15,11 @@ import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
 import com.tinyggrok.app.data.scan.Capture
 import com.tinyggrok.app.data.scan.DocumentCornerDetector
 import com.tinyggrok.app.data.scan.DocumentCorners
-import com.tinyggrok.app.data.scan.LumaImage
 import com.tinyggrok.app.data.scan.NormPoint
+import com.tinyggrok.app.data.scan.PageViews
+import com.tinyggrok.app.data.scan.holdsPrint
 import com.tinyggrok.app.data.scan.locatePage
+import com.tinyggrok.app.data.scan.looksLikePrint
 import com.tinyggrok.app.data.scan.isPlausibleQuad
 import com.tinyggrok.app.data.scan.SCAN_PROMPT_MAX_SIDE
 import com.tinyggrok.app.data.scan.cleanEdges
@@ -37,6 +39,7 @@ import com.tinyggrok.app.data.scan.squareUp
 import com.tinyggrok.app.data.scan.straightenByText
 import com.tinyggrok.app.data.scan.toDetectionJpegBase64
 import com.tinyggrok.app.data.scan.toLumaImage
+import com.tinyggrok.app.data.scan.toPageViews
 import com.tinyggrok.app.data.scan.warpDocument
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -131,17 +134,24 @@ class ScanViewModel @Inject constructor(
     /** Quarter turns the user has added on top of the capture's own EXIF rotation. */
     private var userTurn = 0
 
-    /** Grayscale copy of the current photo, built once and reused by every analysis pass. */
-    private var lumaOf: Pair<Bitmap, LumaImage>? = null
+    /** Edge-finding views of the current photo, built once and reused by every analysis pass. */
+    private var viewsOf: Pair<Bitmap, PageViews>? = null
 
     /**
      * Let the print have the final say on what is level. Paper edges are what the outline
      * is fitted to, and they can mislead (a plastic sleeve, a sheet underneath, a printer
      * that laid the text slightly askew); see [straightenByText].
      */
-    private suspend fun levelToPrint(photo: Bitmap, corners: DocumentCorners): DocumentCorners =
+    private suspend fun levelToPrint(photo: Bitmap, views: PageViews, corners: DocumentCorners): DocumentCorners =
         withContext(Dispatchers.Default) {
             try {
+                // Only what is printed on paper has lines that ought to be level. On a
+                // cover or a photograph the nearest thing to lines of print is a row of
+                // sequins or a horizon. This asks what the page *is*, not how it was
+                // found: a newspaper half on pale carpet is found by its edges alone, as
+                // a cover is, and came out with its print two degrees askew when that was
+                // taken to mean it had none.
+                if (!holdsPrint(views.colour, corners)) return@withContext corners
                 straightenByText(photo.toLumaImage(TEXT_LUMA_MAX_SIDE), corners)
             } catch (e: Throwable) {
                 Log.w(TAG, "Levelling to print skipped: ${e.javaClass.simpleName}: ${e.message}")
@@ -149,9 +159,9 @@ class ScanViewModel @Inject constructor(
             }
         }
 
-    private suspend fun lumaFor(photo: Bitmap): LumaImage {
-        lumaOf?.takeIf { it.first === photo }?.let { return it.second }
-        return withContext(Dispatchers.Default) { photo.toLumaImage() }.also { lumaOf = photo to it }
+    private suspend fun viewsFor(photo: Bitmap): PageViews {
+        viewsOf?.takeIf { it.first === photo }?.let { return it.second }
+        return withContext(Dispatchers.Default) { photo.toPageViews() }.also { viewsOf = photo to it }
     }
 
     /** Set once the user drags, so a late automatic result never overrides their hand. */
@@ -161,11 +171,12 @@ class ScanViewModel @Inject constructor(
         detectJob?.cancel()
         userAdjusted = false
         flattened = null
-        lumaOf = null
+        viewsOf = null
         capture = null
         captureUri = null
         userTurn = 0
-        _uiState.value = ScanUiState(note = "Opening photo…", enhance = enhancePreference)
+        enhanceChoice = null
+        _uiState.value = ScanUiState(note = "Opening photo…", enhance = true)
 
         detectJob = viewModelScope.launch {
             val photo = try {
@@ -179,7 +190,7 @@ class ScanViewModel @Inject constructor(
             } catch (e: Exception) {
                 _uiState.value = ScanUiState(
                     phase = ScanPhase.MANUAL,
-                    enhance = enhancePreference,
+                    enhance = true,
                     error = "Couldn't open the photo: ${e.message ?: "unknown error"}"
                 )
                 return@launch
@@ -188,7 +199,7 @@ class ScanViewModel @Inject constructor(
                 photo = photo,
                 phase = ScanPhase.DETECTING,
                 note = FINDING,
-                enhance = enhancePreference
+                enhance = true
             )
             detectAndAlign(photo)
         }
@@ -212,8 +223,8 @@ class ScanViewModel @Inject constructor(
         // On the phone first. A light page on a darker surface (or the reverse) is found
         // in milliseconds; making the user wait on a model call for that is absurd, and
         // it would fail outright with no network or no key.
-        val luma = lumaFor(photo)
-        val local = withContext(Dispatchers.Default) { locatePage(luma) }?.let { levelToPrint(photo, it) }
+        val views = viewsFor(photo)
+        val local = withContext(Dispatchers.Default) { locatePage(views) }?.let { levelToPrint(photo, views, it) }
         if (local != null) {
             if (userAdjusted) return
             _uiState.value = _uiState.value.copy(
@@ -247,13 +258,13 @@ class ScanViewModel @Inject constructor(
         }
         // The model is right about where the page is and loose about exactly where its
         // corners are; this is the step that makes the result square.
-        val luma = lumaFor(photo)
+        val views = viewsFor(photo)
         val aligned = withContext(Dispatchers.Default) {
             // Same treatment as the on-device route, so a page running out of frame gets
             // its missing sides reconstructed. Grok saw the whole scene, so if its outline
             // cannot be verified it is still used, merely tightened where edges are found.
-            squareUp(luma, rough) ?: refineCorners(luma, rough)
-        }.let { levelToPrint(photo, it) }
+            squareUp(views, rough) ?: refineCorners(views, rough)
+        }.let { levelToPrint(photo, views, it) }
         if (userAdjusted) return
         _uiState.value = _uiState.value.copy(
             corners = aligned,
@@ -300,11 +311,11 @@ class ScanViewModel @Inject constructor(
         val photo = state.photo ?: return
         if (state.phase == ScanPhase.SAVING) return
         viewModelScope.launch {
-            val luma = lumaFor(photo)
-            val onEdges = withContext(Dispatchers.Default) { refineCorners(luma, state.corners) }
+            val views = viewsFor(photo)
+            val onEdges = withContext(Dispatchers.Default) { refineCorners(views, state.corners) }
             val moved = onEdges != state.corners
             // Only level to the print once the corners are actually on the page.
-            val snapped = if (moved) levelToPrint(photo, onEdges) else onEdges
+            val snapped = if (moved) levelToPrint(photo, views, onEdges) else onEdges
             _uiState.value = _uiState.value.copy(
                 corners = snapped,
                 note = if (moved) {
@@ -335,7 +346,7 @@ class ScanViewModel @Inject constructor(
                 }
                 // A point (x, y) lands at (1 - y, x) after a clockwise quarter turn.
                 val corners = orderCorners(state.corners.toList().map { NormPoint(1f - it.y, it.x) })
-                lumaOf = null
+                viewsOf = null
                 flattened = null
                 userTurn = (userTurn + 90) % 360
                 // The previous bitmap is left to the garbage collector: the screen may
@@ -377,17 +388,25 @@ class ScanViewModel @Inject constructor(
     private var flattened: Pair<DocumentCorners, File>? = null
     private var flattenedEnhanced = true
 
+    /** The last page was judged to be mostly pictures, so it was not enhanced. */
+    private var leftAsShot = false
+
     /** Whether the last page came from the original photo or had to fall back, and why. */
     private var flattenedHow = ""
 
-    /** Survives from one scan to the next, so the choice is made once, not every page. */
-    private var enhancePreference = true
+    /**
+     * What the user asked for on this page, or null to let the page decide: print on
+     * paper is enhanced, a page that is mostly pictures is left as shot (see
+     * [looksLikePrint]). Forgotten with each new photo, because it is a judgement about
+     * one page, not a setting.
+     */
+    private var enhanceChoice: Boolean? = null
 
-    /** Enhancement suits print; a page that is mostly photographs looks better without it. */
     fun toggleEnhance() {
-        enhancePreference = !enhancePreference
+        val wanted = !_uiState.value.enhance
+        enhanceChoice = wanted
         val showing = _uiState.value.result != null
-        _uiState.value = _uiState.value.copy(enhance = enhancePreference)
+        _uiState.value = _uiState.value.copy(enhance = wanted)
         if (showing) align()
     }
 
@@ -406,7 +425,11 @@ class ScanViewModel @Inject constructor(
                 } else {
                     _uiState.value = _uiState.value.copy(
                         result = shown,
-                        note = if (flattenedHow.startsWith("REDUCED")) _uiState.value.note else ALIGNED_RESULT
+                        note = when {
+                            flattenedHow.startsWith("REDUCED") -> _uiState.value.note
+                            leftAsShot -> ALIGNED_AS_SHOT
+                            else -> ALIGNED_RESULT
+                        }
                     )
                 }
             }
@@ -467,19 +490,22 @@ class ScanViewModel @Inject constructor(
         val noteBefore = if (detecting) "" else state.note
         _uiState.value = state.copy(
             phase = ScanPhase.SAVING,
-            note = if (state.enhance) "Straightening and enhancing…" else "Straightening…",
+            note = if (enhanceChoice == true) "Straightening and enhancing…" else "Straightening…",
             error = null
         )
 
         viewModelScope.launch {
             try {
+                val choice = enhanceChoice
                 val cached = flattened?.takeIf {
-                    it.first == state.corners && flattenedEnhanced == state.enhance && it.second.exists()
+                    it.first == state.corners && (choice == null || choice == flattenedEnhanced) && it.second.exists()
                 }
+                var enhanced = flattenedEnhanced
                 val file = cached?.second ?: withContext(Dispatchers.Default) {
                     val flat = flattenAtBestResolution(photo, state.corners)
                     try {
-                        if (state.enhance) {
+                        enhanced = choice ?: looksLikePrint(flat)
+                        if (enhanced) {
                             // Cosmetic: if it cannot run, the plain page is still a good scan.
                             try {
                                 enhanceDocument(flat)
@@ -494,15 +520,19 @@ class ScanViewModel @Inject constructor(
                     }
                 }.also {
                     flattened = state.corners to it
-                    flattenedEnhanced = state.enhance
+                    flattenedEnhanced = enhanced
                 }
+                // Show what was actually done, which the page may have decided.
+                _uiState.value = _uiState.value.copy(enhance = enhanced)
+                leftAsShot = choice == null && !enhanced
 
                 // Never let a quality fallback pass silently again: say what was saved.
                 val size = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     .also { BitmapFactory.decodeFile(file.path, it) }
                 val summary = "Saved ${size.outWidth} × ${size.outHeight} px, $flattenedHow."
                 debugLog.logIncoming(
-                    summary = "SCAN ${size.outWidth}×${size.outHeight} | enhance=${state.enhance}",
+                    summary = "SCAN ${size.outWidth}×${size.outHeight} | enhance=$enhanced" +
+                        if (choice == null) " (decided by the page)" else "",
                     body = "$summary\n${factsFor(state.corners)}\n" +
                         "exif=${capture?.exifRotation} userTurn=$userTurn file=${file.name} (${file.length() / 1024} KB)"
                 )
@@ -539,11 +569,11 @@ class ScanViewModel @Inject constructor(
         detectJob?.cancel()
         detectJob = null
         flattened = null
-        lumaOf = null
+        viewsOf = null
         capture = null
         captureUri = null
         userTurn = 0
-        _uiState.value = ScanUiState(enhance = enhancePreference)
+        _uiState.value = ScanUiState(enhance = true)
     }
 
     private companion object {
@@ -553,6 +583,8 @@ class ScanViewModel @Inject constructor(
         const val ASKING_GROK = "Asking Grok to find the page… you can drag the corners meanwhile."
         const val ALIGNED = "Edges aligned. Drag a corner to adjust."
         const val ALIGNED_RESULT = "Aligned. Pinch to zoom in and check it."
+        const val ALIGNED_AS_SHOT =
+            "Aligned. This looks like a cover or a photo, so its colours are left as shot; Enhance is for print."
 
         /** Longest side of the aligned page as held for the screen. */
         const val DISPLAY_MAX_SIDE = 2048

@@ -103,6 +103,86 @@ class DocumentGeometryTest {
         assertEquals(1000, w)
     }
 
+    // --- proportions of a page photographed at an angle ------------------------------------
+
+    /**
+     * Corners of an A4 sheet as a pinhole camera sees it: the phone tilted [tilt] degrees
+     * back from straight down and turned [yaw] degrees sideways, its focal length [focal]
+     * times the photo's long side. The sheet fills about two thirds of a 3000 x 4000 photo.
+     */
+    private fun photographedA4(tilt: Double, yaw: Double = 0.0, focal: Double = 0.72): DocumentCorners {
+        val pw = 3000.0
+        val ph = 4000.0
+        val f = focal * ph
+        val halfW = 105.0
+        val halfH = 148.5
+        val distance = f * (2 * halfH) / (0.66 * ph)
+        val t = Math.toRadians(tilt)
+        val y = Math.toRadians(yaw)
+        fun project(u: Double, v: Double): NormPoint {
+            // Turn about the vertical axis, then tip about the horizontal one.
+            val x1 = u * Math.cos(y)
+            val z1 = -u * Math.sin(y)
+            val y2 = v * Math.cos(t) - z1 * Math.sin(t)
+            val z2 = v * Math.sin(t) + z1 * Math.cos(t)
+            val z = distance - z2
+            return NormPoint(((f * x1 / z + pw / 2) / pw).toFloat(), ((f * y2 / z + ph / 2) / ph).toFloat())
+        }
+        return DocumentCorners(project(-halfW, -halfH), project(halfW, -halfH), project(halfW, halfH), project(-halfW, halfH))
+    }
+
+    private fun sideLengthRatio(c: DocumentCorners): Float {
+        fun d(a: NormPoint, b: NormPoint) = Math.hypot((a.x - b.x) * 3000.0, (a.y - b.y) * 4000.0)
+        return (maxOf(d(c.tl, c.bl), d(c.tr, c.br)) / maxOf(d(c.tl, c.tr), d(c.bl, c.br))).toFloat()
+    }
+
+    @Test
+    fun `a page photographed at an angle keeps its proportions`() {
+        for (tilt in listOf(0.0, 12.0, 25.0, 35.0)) for (yaw in listOf(0.0, 10.0)) {
+            val corners = photographedA4(tilt, yaw)
+            val ratio = pageProportions(corners, 3000, 4000)!!
+            assertEquals("tilt $tilt yaw $yaw", 1.414f, ratio, 0.012f)
+            val (w, h) = flattenedSize(corners, 3000, 4000, maxSide = 100_000)
+            assertEquals("tilt $tilt yaw $yaw, as flattened", 1.414f, h.toFloat() / w, 0.012f)
+        }
+        // The fault this replaces: side lengths alone make a tilted page squat.
+        assertTrue(sideLengthRatio(photographedA4(25.0)) < 1.33f)
+    }
+
+    @Test
+    fun `the focal length is assumed, and across phone cameras that costs little`() {
+        // 24 mm and 28 mm equivalent, the ends of the range for a phone's main camera.
+        for (focal in listOf(0.69, 0.81)) {
+            val ratio = pageProportions(photographedA4(tilt = 25.0, focal = focal), 3000, 4000)!!
+            assertEquals("focal $focal", 1.414f, ratio, 0.035f)
+        }
+        // From straight above it costs nothing at all.
+        assertEquals(1.414f, pageProportions(photographedA4(tilt = 0.0, focal = 0.5), 3000, 4000)!!, 0.005f)
+    }
+
+    @Test
+    fun `flattening never throws away detail to get the proportions right`() {
+        val corners = photographedA4(30.0)
+        val (w, h) = flattenedSize(corners, 3000, 4000, maxSide = 100_000)
+        fun d(a: NormPoint, b: NormPoint) = Math.hypot((a.x - b.x) * 3000.0, (a.y - b.y) * 4000.0)
+        assertTrue(w >= maxOf(d(corners.tl, corners.tr), d(corners.bl, corners.br)).toInt())
+        assertTrue(h >= maxOf(d(corners.tl, corners.bl), d(corners.tr, corners.br)).toInt())
+    }
+
+    @Test
+    fun `an outline that implies an absurd tilt falls back to its side lengths`() {
+        // A wild trapezoid: the top a tenth as wide as the bottom.
+        val wild = DocumentCorners(NormPoint(0.45f, 0.1f), NormPoint(0.55f, 0.1f), NormPoint(1f, 0.9f), NormPoint(0f, 0.9f))
+        val (w, h) = flattenedSize(wild, 1000, 1000, maxSide = 100_000)
+        assertEquals(1000, w)
+        assertEquals(sideLengthRatio1000(wild), h.toFloat() / w, 0.01f)
+    }
+
+    private fun sideLengthRatio1000(c: DocumentCorners): Float {
+        fun d(a: NormPoint, b: NormPoint) = Math.hypot((a.x - b.x) * 1000.0, (a.y - b.y) * 1000.0)
+        return (maxOf(d(c.tl, c.bl), d(c.tr, c.br)) / maxOf(d(c.tl, c.tr), d(c.bl, c.br))).toFloat()
+    }
+
     private fun assertPoint(expected: NormPoint, actual: NormPoint) {
         assertEquals(expected.x, actual.x, 1e-6f)
         assertEquals(expected.y, actual.y, 1e-6f)

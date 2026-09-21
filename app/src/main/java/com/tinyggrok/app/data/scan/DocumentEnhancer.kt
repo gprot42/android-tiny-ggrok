@@ -26,6 +26,74 @@ internal class ArrayPixelGrid(override val width: Int, override val height: Int,
 }
 
 /**
+ * Share of a flattened page (0..1) that is bare paper: bright, and of the one colour that
+ * most of the bright part shares, whatever that colour is (white, cream, a pastel sheet, or
+ * any of them under warm light).
+ *
+ * This is what separates print from pictures. Everything [DocumentEnhancer] does assumes a
+ * sheet that is mostly one paper colour with ink on it: it divides that colour out, pushes
+ * what is left toward black and white, and smooths colour as noise. On a page that is a
+ * photograph all of that is damage. Reported from a real scan: a full-colour magazine
+ * cover came out posterised and smeared. Measured on real pages, letters and forms score
+ * 0.93 to 1.00 and that cover 0.14, so the line between them is not delicate.
+ */
+internal fun paperShare(page: PixelGrid): Float {
+    val stride = max(1, max(page.width, page.height) / PAPER_SAMPLES_PER_SIDE)
+    val row = IntArray(page.width)
+    val samples = ArrayList<Int>()
+    var y = stride / 2
+    while (y < page.height) {
+        page.readRows(y, 1, row)
+        var x = stride / 2
+        while (x < page.width) {
+            samples += row[x]
+            x += stride
+        }
+        y += stride
+    }
+    return paperShareOf(samples.toIntArray())
+}
+
+/** [paperShare] of a handful of ARGB samples taken from a page, however they were gathered. */
+internal fun paperShareOf(samples: IntArray): Float {
+    val n = samples.size
+    if (n == 0) return 1f
+    fun red(i: Int) = (samples[i] shr 16) and 0xFF
+    fun green(i: Int) = (samples[i] shr 8) and 0xFF
+    fun blue(i: Int) = samples[i] and 0xFF
+
+    val luma = FloatArray(n) { (0.299f * red(it) + 0.587f * green(it) + 0.114f * blue(it)) / 255f }
+    val white = luma.copyOf().also { it.sort() }[((n - 1) * 0.9f).toInt()]
+    // Colour, apart from brightness, as two differences; counted over the bright samples.
+    val bins = 2 * PAPER_COLOUR_BINS + 1
+    val counts = IntArray(bins * bins)
+    fun bin(difference: Int) =
+        (Math.floorDiv(difference, PAPER_COLOUR_BIN_WIDTH) + PAPER_COLOUR_BINS).coerceIn(0, bins - 1)
+    for (i in 0 until n) {
+        if (luma[i] < PAPER_MIN_BRIGHTNESS * white) continue
+        counts[bin(red(i) - green(i)) * bins + bin(blue(i) - green(i))]++
+    }
+    val mode = counts.indices.maxByOrNull { counts[it] } ?: return 1f
+    var paper = 0
+    for (du in -1..1) for (dv in -1..1) {
+        val u = mode / bins + du
+        val v = mode % bins + dv
+        if (u in 0 until bins && v in 0 until bins) paper += counts[u * bins + v]
+    }
+    return paper.toFloat() / n
+}
+
+/** Whether a flattened page is print on paper, which enhancement suits, or mostly pictures. */
+internal fun looksLikePrint(page: PixelGrid): Boolean = paperShare(page) >= MIN_PAPER_SHARE
+
+internal const val MIN_PAPER_SHARE = 0.5f
+
+private const val PAPER_SAMPLES_PER_SIDE = 160
+private const val PAPER_MIN_BRIGHTNESS = 0.6f
+private const val PAPER_COLOUR_BIN_WIDTH = 10 // of 255: about 0.04
+private const val PAPER_COLOUR_BINS = 16
+
+/**
  * Turns a photograph of a page into something that reads like a scan.
  *
  * A flattened photo is geometrically right and still looks soft, for reasons that have
