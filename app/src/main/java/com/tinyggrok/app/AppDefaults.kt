@@ -2,19 +2,28 @@ package com.tinyggrok.app
 
 /** App-wide defaults surfaced in multiple places (requests + About screen). */
 object AppDefaults {
+    const val MODEL_GROK_4_7 = "grok-4.7"
     const val MODEL_GROK_4_6 = "grok-4.6"
     const val MODEL_GROK_4_5 = "grok-4.5"
 
-    /** Default chat model (Grok 4.6). */
-    const val DEFAULT_MODEL = MODEL_GROK_4_6
+    /**
+     * There is no id here for "Grok 4.7 Fast". It is the same model on faster hardware at
+     * twice the token rates, and xAI serves it only through Cursor and Grok Build, not on
+     * the public API this app talks to. Offering it would mean sending a model id the API
+     * rejects, which costs a round trip and silently lands the user on the backup model.
+     */
 
-    /** Used when 4.6 is rejected as unknown/unavailable by the API. */
-    const val BACKUP_MODEL = MODEL_GROK_4_5
+    /** Default chat model (Grok 4.7). */
+    const val DEFAULT_MODEL = MODEL_GROK_4_7
 
-    /** Models the user can pick in Settings — only 4.6 and 4.5. */
+    /** Used when the chosen model is rejected as unknown/unavailable by the API. */
+    const val BACKUP_MODEL = MODEL_GROK_4_6
+
+    /** Models the user can pick in Settings. */
     val CHAT_MODELS: List<Pair<String, String>> = listOf(
-        "Grok 4.6" to MODEL_GROK_4_6,
-        "Grok 4.5" to MODEL_GROK_4_5
+        "4.7" to MODEL_GROK_4_7,
+        "4.6" to MODEL_GROK_4_6,
+        "4.5" to MODEL_GROK_4_5
     )
 
     fun isKnownChatModel(id: String): Boolean =

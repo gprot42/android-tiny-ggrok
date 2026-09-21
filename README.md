@@ -11,7 +11,7 @@ A lightweight native Android app for chatting with xAI's Grok models.
 - Secure API key entry and storage in Settings
 - **Credits & usage** screen (chat top bar **Credits**): live prepaid API balance, postpaid limits, model rate quotas via Management API; SuperGrok plan reference (consumer quotas are not exposed by API)
 - Three themes: Light, Dark, Tokyo Night
-- Chat models: **Grok 4.6** (default) or **Grok 4.5** (backup) — only these two, selectable in Settings; 4.5 is used automatically if 4.6 is unavailable
+- Chat models: **Grok 4.7** (default), **4.6** or **4.5**, selectable in Settings; 4.6 is used automatically if your choice is unavailable. Grok 4.7 Fast is deliberately absent: it is the same model on faster hardware at twice the rates, and xAI serves it only through Cursor and Grok Build, not on the public API
 - Uses xAI Agent Tools / Responses API (`https://api.x.ai/v1/responses`)
 - **Live web search**: when Grok is unsure or a question depends on recent/factual information, it automatically uses the `web_search` tool instead of guessing. Source links are appended to answers (tap to open, long-press to copy)
 - **UK transit lookups**: prefers official National Rail / TOC sites for live times and disruptions (see [UK transit web sources](#uk-transit-web-sources)); open web for everything else
@@ -86,7 +86,7 @@ Privacy and cost: most scans never leave the phone until you send them. Only whe
 | IPv6 route advertised but blackholed (common on mobile data) | Resolved addresses are ordered **IPv4 first**; connect timeout is 12 s instead of 60 s so a dead address is skipped quickly |
 | Connect/TLS reset, HTTP/2 stream reset before any data, `408/429/5xx/529` | Up to **3 attempts** with 0.5 s → 1.5 s back-off (honours `Retry-After` up to 10 s). A reply that already started streaming is never retried, so nothing is double-billed |
 | No active network | Fails immediately with “No internet connection” — no 60 s hang |
-| Model id rejected | Falls back from Grok 4.6 to Grok 4.5 (unchanged) |
+| Model id rejected | Falls back to Grok 4.6 (unchanged) |
 
 Turn on **Debug mode** in Settings to see each retry (`RETRY 2/3 in 500ms …`) and the reason in the log screen.
 

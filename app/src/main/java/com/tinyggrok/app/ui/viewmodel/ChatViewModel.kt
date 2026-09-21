@@ -101,7 +101,7 @@ internal fun trimHistory(
 
 /** Per-1M-token prices (input, output) for known chat models. */
 private fun costRatesPerMillion(model: String): Pair<Double, Double> = when (model) {
-    AppDefaults.MODEL_GROK_4_6, AppDefaults.MODEL_GROK_4_5 -> 2.00 to 6.00
+    AppDefaults.MODEL_GROK_4_7, AppDefaults.MODEL_GROK_4_6, AppDefaults.MODEL_GROK_4_5 -> 2.00 to 6.00
     else -> 2.00 to 6.00
 }
 

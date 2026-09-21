@@ -197,7 +197,7 @@ fun SettingsScreen(
 
             // ── Chat ─────────────────────────────────────────────────────────
             SettingsSection(title = "Chat", icon = Icons.Default.TextFields) {
-                SectionLabel("Model")
+                SectionLabel("Grok model")
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                     AppDefaults.CHAT_MODELS.forEachIndexed { index, (label, id) ->
                         SegmentedButton(
@@ -211,7 +211,8 @@ fun SettingsScreen(
                     }
                 }
                 Text(
-                    "Grok 4.6 by default. 4.5 is the backup if 4.6 is unavailable.",
+                    "Grok 4.7 by default, xAI's most capable model. 4.6 is the backup if " +
+                        "your choice is unavailable. (4.7 Fast is not on the public API.)",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

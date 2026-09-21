@@ -40,6 +40,19 @@ class ResponsesRequestJsonTest {
     }
 
     @Test
+    fun theChosenModelIdIsWhatGoesOnTheWire() {
+        // A request left alone carries the app's default model.
+        val standard = json(ResponsesRequest(input = listOf(InputMessage(role = "user", content = "hi"))))
+        assertTrue(standard, standard.contains("\"model\":\"grok-4.7\""))
+
+        // And every model the picker offers is sent exactly as xAI spells it.
+        for ((_, id) in AppDefaults.CHAT_MODELS) {
+            val body = json(ResponsesRequest(model = id, input = listOf(InputMessage(role = "user", content = "hi"))))
+            assertTrue(body, body.contains("\"model\":\"$id\""))
+        }
+    }
+
+    @Test
     fun effortValuesMatchTheApi() {
         // Documented set for POST /v1/responses.
         val allowed = setOf("none", "low", "medium", "high", "xhigh")
