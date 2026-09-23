@@ -17,13 +17,16 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.tinyggrok.app.AppDefaults
 import com.tinyggrok.app.BuildConfig
+import com.tinyggrok.app.ui.viewmodel.AboutViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AboutScreen(
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    viewModel: AboutViewModel = hiltViewModel()
 ) {
     Scaffold(
         topBar = {
@@ -56,6 +59,8 @@ fun AboutScreen(
             InfoRow(label = "Build date", value = BuildConfig.BUILD_DATE)
             InfoRow(label = "Application ID", value = BuildConfig.APPLICATION_ID)
             InfoRow(label = "Default model", value = AppDefaults.DEFAULT_MODEL)
+            // Blank on Android 10 and older, which keeps no such record.
+            viewModel.lastExit?.let { InfoRow(label = "Previous exit", value = it) }
             InfoRow(label = "API endpoint", value = "https://api.x.ai/v1/chat/completions")
             InfoRow(label = "Framework", value = AppDefaults.FRAMEWORK)
             InfoRow(label = "Language", value = "Kotlin 2.1.20 / JVM 17 bytecode")

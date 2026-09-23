@@ -4,4 +4,6 @@
     <cache-path name="shared_inbox" path="shared_inbox/" />
     <!-- Camera captures and straightened pages for the document scanner -->
     <cache-path name="scans" path="scans/" />
+    <!-- A downloaded update, handed to the package installer -->
+    <cache-path name="updates" path="updates/" />
 </paths>

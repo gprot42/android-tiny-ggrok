@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -49,6 +50,9 @@ class SettingsRepository @Inject constructor(
     private val RESPONSE_FORMAT_KEY = stringPreferencesKey("response_format")
     private val FONT_SIZE_KEY = floatPreferencesKey("font_size")
     private val CHAT_MODEL_KEY = stringPreferencesKey("chat_model")
+    private val AUTO_UPDATE_CHECK_KEY = booleanPreferencesKey("auto_update_check")
+    private val LAST_UPDATE_CHECK_KEY = longPreferencesKey("last_update_check_epoch_ms")
+    private val DISMISSED_UPDATE_KEY = stringPreferencesKey("dismissed_update_version")
     private val VOICE_ENABLED_KEY = booleanPreferencesKey("voice_enabled")
     private val VOICE_TARGET_LANGUAGE_KEY = stringPreferencesKey("voice_target_language")
     private val VOICE_SOURCE_LANGUAGE_KEY = stringPreferencesKey("voice_source_language")
@@ -110,6 +114,17 @@ class SettingsRepository @Inject constructor(
 
     val debugMode: Flow<Boolean> = context.dataStore.data
         .map { preferences -> preferences[DEBUG_MODE_KEY] ?: false }
+
+    /** Look for a newer release on GitHub when the app opens (at most daily). On by default. */
+    val autoUpdateCheck: Flow<Boolean> = context.dataStore.data
+        .map { preferences -> preferences[AUTO_UPDATE_CHECK_KEY] ?: true }
+
+    val lastUpdateCheck: Flow<Long> = context.dataStore.data
+        .map { preferences -> preferences[LAST_UPDATE_CHECK_KEY] ?: 0L }
+
+    /** The version whose banner the user closed, so it does not come back until a newer one. */
+    val dismissedUpdateVersion: Flow<String> = context.dataStore.data
+        .map { preferences -> preferences[DISMISSED_UPDATE_KEY] ?: "" }
 
     val responseFormat: Flow<String> = context.dataStore.data
         .map { preferences -> preferences[RESPONSE_FORMAT_KEY] ?: "html" }
@@ -242,6 +257,18 @@ class SettingsRepository @Inject constructor(
         context.dataStore.edit { preferences ->
             preferences[THEME_KEY] = theme.name
         }
+    }
+
+    suspend fun saveAutoUpdateCheck(enabled: Boolean) {
+        context.dataStore.edit { it[AUTO_UPDATE_CHECK_KEY] = enabled }
+    }
+
+    suspend fun saveLastUpdateCheck(epochMs: Long) {
+        context.dataStore.edit { it[LAST_UPDATE_CHECK_KEY] = epochMs }
+    }
+
+    suspend fun saveDismissedUpdateVersion(version: String) {
+        context.dataStore.edit { it[DISMISSED_UPDATE_KEY] = version }
     }
 
     suspend fun saveShowCost(show: Boolean) {

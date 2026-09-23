@@ -1,5 +1,7 @@
 package com.tinyggrok.app.ui.screens
 
+import androidx.compose.material3.LinearProgressIndicator
+import com.tinyggrok.app.ui.viewmodel.UpdateViewModel
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -141,9 +143,14 @@ fun ChatScreen(
     onNavigateToHistory: () -> Unit = {},
     onNavigateToVoiceTranslator: () -> Unit = {},
     onNavigateToUsage: () -> Unit = {},
-    viewModel: ChatViewModel = hiltViewModel()
+    viewModel: ChatViewModel = hiltViewModel(),
+    updateViewModel: UpdateViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val update by updateViewModel.state.collectAsState()
+
+    // A newer build on GitHub? Asked at most once a day, and never in the user's way.
+    LaunchedEffect(Unit) { updateViewModel.checkIfDue() }
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
@@ -276,6 +283,12 @@ fun ChatScreen(
     // Scroll to the sentinel (true bottom) when new messages arrive / typing toggles,
     // but only if the user is already following the bottom of the list.
     LaunchedEffect(Unit) {
+        // Follow mode is re-engaged when a send *begins*, not for as long as one lasts.
+        // Reported as "scrolling gets stuck, possibly whilst it's doing a web search":
+        // a long answer emits a new token every few milliseconds, and re-engaging on
+        // every one of them meant scrolling up was undone before the finger had left
+        // the glass. A web search makes it worst because those answers are the longest.
+        var wasSending = false
         snapshotFlow {
             // Streamed length is included so the list follows the answer as it grows.
             Triple(
@@ -287,9 +300,11 @@ fun ChatScreen(
             .distinctUntilChanged()
             .filter { (size, isSending, _) -> size > 0 || isSending }
             .collect { (size, isSending, _) ->
-                // Sending always re-engages follow mode (user just submitted a prompt).
-                if (isSending) stickToBottom = true
+                stickToBottom = followsBottomAfter(stickToBottom, isSending, wasSending)
+                wasSending = isSending
                 if (!stickToBottom) return@collect
+                // Never pull the list out from under a finger that is on it.
+                if (listState.isScrollInProgress) return@collect
                 // While the reply is still only a status line, pin that line itself.
                 // Jumping to the bottom sentinel can leave it above the viewport, which
                 // reads as a conversation that has gone blank.
@@ -301,8 +316,8 @@ fun ChatScreen(
                 // Instant jump: animateScrollToItem fights WebView height growth and
                 // feels more jarring when a tall answer lands.
                 delay(16)
-                listState.scrollToItem(target)
-                stickToBottom = true
+                // The user may have grabbed the list during that frame.
+                if (stickToBottom && !listState.isScrollInProgress) listState.scrollToItem(target)
             }
     }
 
@@ -312,6 +327,7 @@ fun ChatScreen(
     val lastAssistantHeight = lastAssistantId?.let { webViewHeights[it] }
     LaunchedEffect(lastAssistantId, lastAssistantHeight, uiState.isSending) {
         if (!stickToBottom || lastAssistantHeight == null || lastAssistantHeight <= 0) return@LaunchedEffect
+        if (listState.isScrollInProgress) return@LaunchedEffect
         val sentinelIndex = uiState.messages.size + (if (uiState.isSending) 1 else 0)
         listState.scrollToItem(sentinelIndex)
     }
@@ -478,6 +494,16 @@ fun ChatScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            update.available?.takeIf { update.showBanner }?.let { available ->
+                UpdateBanner(
+                    version = available.versionName,
+                    downloadProgress = update.downloadProgress,
+                    message = update.message,
+                    onInstall = updateViewModel::downloadAndInstall,
+                    onDismiss = updateViewModel::dismissBanner
+                )
+            }
+
             if (uiState.messages.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -1269,9 +1295,30 @@ private fun HtmlContent(
         }
     }
     val onHeightMeasuredState = rememberUpdatedState(onHeightMeasured)
+    // Set when the page reported more than can be laid out; see MAX_ANSWER_HEIGHT_PX.
+    var cutShort by remember { mutableStateOf(false) }
+
+    /** Take a height reading from the page, never more than Compose can lay out. */
+    fun acceptHeight(view: WebView, measuredPx: Int) {
+        if (measuredPx <= 0) return
+        if (measuredPx > MAX_ANSWER_HEIGHT_PX) {
+            // Recorded so that a recurrence says what produced it; the cause is not known.
+            android.util.Log.w(
+                "HtmlContent",
+                "Answer height $measuredPx px exceeds $MAX_ANSWER_HEIGHT_PX: contentHeight=${view.contentHeight} css px, " +
+                    "view ${view.width}x${view.height}, density ${view.resources.displayMetrics.density}, " +
+                    "html ${html.length} chars"
+            )
+            cutShort = true
+        }
+        val safe = answerViewHeight(measuredPx)
+        measuredHeightPx = safe
+        onHeightMeasuredState.value(safe)
+    }
 
     val heightModifier = if (measuredHeightPx > 0) {
-        Modifier.height(with(density) { measuredHeightPx.toDp() })
+        // Cached heights pass through the same cap as fresh ones.
+        Modifier.height(with(density) { answerViewHeight(measuredHeightPx).toDp() })
     } else {
         // Placeholder until first measure so the item doesn't claim the whole viewport.
         Modifier.height(1.dp)
@@ -1297,23 +1344,13 @@ private fun HtmlContent(
                     ): Boolean = openExternally(context, request.url)
 
                     override fun onPageFinished(view: WebView, url: String?) {
-                        view.measureContentHeight { h ->
-                            if (h > 0) {
-                                measuredHeightPx = h
-                                onHeightMeasuredState.value(h)
-                            }
-                        }
+                        view.measureContentHeight { h -> acceptHeight(view, h) }
                     }
                 }
                 webChromeClient = object : WebChromeClient() {
                     override fun onProgressChanged(view: WebView?, newProgress: Int) {
                         if (newProgress == 100 && view != null) {
-                            view.measureContentHeight { h ->
-                                if (h > 0) {
-                                    measuredHeightPx = h
-                                    onHeightMeasuredState.value(h)
-                                }
-                            }
+                            view.measureContentHeight { h -> acceptHeight(view, h) }
                         }
                     }
                 }
@@ -1352,6 +1389,13 @@ private fun HtmlContent(
             }
         }
     )
+    if (cutShort) {
+        Text(
+            "This answer is too long to show in full here. Its Copy and Share buttons have all of it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline
+        )
+    }
 }
 
 /**
@@ -1374,6 +1418,47 @@ private fun WebView.measureContentHeight(onResult: (Int) -> Unit) {
         // contentHeight often settles shortly after onPageFinished
         postDelayed({ report() }, 50)
         postDelayed({ report() }, 150)
+    }
+}
+
+/** "Version x is available", with Install and a way to say not now. */
+@Composable
+private fun UpdateBanner(
+    version: String,
+    downloadProgress: Float?,
+    message: String?,
+    onInstall: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Tiny Ggrok $version is available",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onDismiss, enabled = downloadProgress == null) { Text("Not now") }
+                TextButton(onClick = onInstall, enabled = downloadProgress == null) { Text("Install") }
+            }
+            downloadProgress?.let { progress ->
+                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+            }
+            // Only the lines that need the user: allowing installs, or a failed download.
+            message?.takeIf { downloadProgress == null && (it.startsWith("Allow") || it.startsWith("Download failed")) }
+                ?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+        }
     }
 }
 

@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
@@ -55,6 +56,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -95,6 +97,7 @@ import com.tinyggrok.app.data.repository.AuthMode
 import com.tinyggrok.app.ui.theme.AppTheme
 import com.tinyggrok.app.ui.viewmodel.ApiKeyCheckUi
 import com.tinyggrok.app.ui.viewmodel.SettingsViewModel
+import com.tinyggrok.app.ui.viewmodel.UpdateViewModel
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -104,9 +107,11 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToAbout: () -> Unit,
     onNavigateToUsage: () -> Unit = {},
-    viewModel: SettingsViewModel = hiltViewModel()
+    viewModel: SettingsViewModel = hiltViewModel(),
+    updateViewModel: UpdateViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val update by updateViewModel.state.collectAsState()
     val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -896,6 +901,54 @@ fun SettingsScreen(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text("Credits & usage")
+            }
+
+            // ── App updates ──────────────────────────────────────────────────
+            SettingsSection(title = "App updates", icon = Icons.Default.SystemUpdate) {
+                Text(
+                    "Version ${update.currentVersion}. New builds are published as GitHub releases.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                SettingsToggleRow(
+                    title = "Check for updates",
+                    subtitle = "Look for a newer release when the app opens, once a day",
+                    icon = Icons.Default.SystemUpdate,
+                    checked = update.autoCheck,
+                    onCheckedChange = updateViewModel::setAutoCheck
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = updateViewModel::checkNow,
+                        enabled = !update.checking && update.downloadProgress == null
+                    ) {
+                        Text(if (update.checking) "Checking…" else "Check now")
+                    }
+                    update.available?.let { available ->
+                        Button(
+                            onClick = updateViewModel::downloadAndInstall,
+                            enabled = update.downloadProgress == null
+                        ) { Text("Install ${available.versionName}") }
+                    }
+                }
+                update.downloadProgress?.let { progress ->
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                    )
+                }
+                update.message?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
             }
 
             OutlinedButton(

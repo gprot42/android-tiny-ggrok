@@ -16,6 +16,8 @@ import com.tinyggrok.app.data.repository.ChatProgress
 import com.tinyggrok.app.data.repository.ChatRepository
 import com.tinyggrok.app.data.repository.DebugLogRepository
 import com.tinyggrok.app.data.repository.ResolvedAuth
+import com.tinyggrok.app.data.local.ChatTranscriptStore
+import com.tinyggrok.app.data.local.StoredMessage
 import com.tinyggrok.app.data.repository.ResponseHistoryRepository
 import com.tinyggrok.app.data.repository.SuperGrokAuthRepository
 import com.tinyggrok.app.data.share.IncomingShare
@@ -25,6 +27,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -119,6 +122,39 @@ data class QueuedPrompt(
     val images: List<AttachedImage>
 )
 
+/** The saved form of a message, and the way back. Images are kept as their locations. */
+internal fun ChatUiMessage.toStored(): StoredMessage = StoredMessage(
+    id = id,
+    role = role,
+    content = content,
+    imageUris = imageUris.map { it.toString() },
+    model = model,
+    usedWebSearch = usedWebSearch,
+    citations = citations,
+    promptTokens = costInfo?.promptTokens,
+    completionTokens = costInfo?.completionTokens,
+    totalTokens = costInfo?.totalTokens,
+    estimatedCostUsd = costInfo?.estimatedCostUsd
+)
+
+internal fun StoredMessage.toUiMessage(): ChatUiMessage = ChatUiMessage(
+    id = id,
+    role = role,
+    content = content,
+    // A location that the next run cannot read simply shows nothing; the words remain.
+    imageUris = imageUris.mapNotNull { runCatching { Uri.parse(it) }.getOrNull() },
+    model = model,
+    usedWebSearch = usedWebSearch,
+    citations = citations,
+    costInfo = if (promptTokens != null && completionTokens != null && totalTokens != null &&
+        estimatedCostUsd != null
+    ) {
+        CostInfo(promptTokens, completionTokens, totalTokens, estimatedCostUsd)
+    } else {
+        null
+    }
+)
+
 /** Message text used when a prompt carries only images and no typed words. */
 internal fun imageOnlyPlaceholder(count: Int): String =
     if (count == 1) "[Image]" else "[$count images]"
@@ -195,6 +231,7 @@ class ChatViewModel @Inject constructor(
     private val locationRepository: LocationRepository,
     private val debugLogRepository: DebugLogRepository,
     private val responseHistoryRepository: ResponseHistoryRepository,
+    private val transcriptStore: ChatTranscriptStore,
     private val incomingShareRepository: IncomingShareRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
@@ -204,7 +241,45 @@ class ChatViewModel @Inject constructor(
     /** The in-flight reply, so it can be stopped instead of locking the composer. */
     private var sendJob: Job? = null
 
+    /** Pending write of the conversation to disk; replaced on every change. */
+    private var saveJob: Job? = null
+
+    /** How long the conversation must sit still before it is written to disk. */
+    private val saveDebounceMs = 400L
+
+    /**
+     * Keep the conversation on disk, a moment after it settles.
+     *
+     * Every answer, and every keystroke of a draft, is a reason to save; writing on each
+     * one would be pointless I/O, so the write is deferred and the previous one dropped.
+     * The gap is short because the event being insured against — the process ending —
+     * arrives without warning.
+     */
+    private fun rememberConversation() {
+        saveJob?.cancel()
+        val state = _uiState.value
+        saveJob = viewModelScope.launch {
+            delay(saveDebounceMs)
+            transcriptStore.save(state.messages.map { it.toStored() }, state.prompt)
+        }
+    }
+
+    /** Put back the conversation the last run was having, if this run has not started one. */
+    private fun restoreConversation() {
+        viewModelScope.launch {
+            val saved = transcriptStore.load()
+            if (saved.isEmpty) return@launch
+            val state = _uiState.value
+            // Anything the user has already done this run wins over what was on disk.
+            _uiState.value = state.copy(
+                messages = if (state.messages.isEmpty()) saved.messages.map { it.toUiMessage() } else state.messages,
+                prompt = if (state.prompt.isBlank()) saved.draft else state.prompt
+            )
+        }
+    }
+
     init {
+        restoreConversation()
         // Open the TLS connection to api.x.ai now so the first send doesn't pay for it.
         chatRepository.warmUpConnection(force = true)
         viewModelScope.launch {
@@ -278,6 +353,7 @@ class ChatViewModel @Inject constructor(
     fun updatePrompt(prompt: String) {
         val wasBlank = _uiState.value.prompt.isBlank()
         _uiState.value = _uiState.value.copy(prompt = prompt, errorMessage = null)
+        rememberConversation()
         // User started composing: make sure a warm connection is waiting for them.
         if (wasBlank && prompt.isNotBlank()) chatRepository.warmUpConnection()
     }
@@ -545,6 +621,8 @@ class ChatViewModel @Inject constructor(
                 }
             )
 
+            rememberConversation()
+
             if (result.isSuccess) {
                 sendQueuedPrompt()
             } else {
@@ -623,6 +701,9 @@ class ChatViewModel @Inject constructor(
             streamingStatus = null,
             queuedPrompt = null
         )
+        // Clear means clear: the saved copy goes too, not just the one on screen.
+        saveJob?.cancel()
+        viewModelScope.launch { transcriptStore.clear() }
     }
 
     fun clearPrompt() {
